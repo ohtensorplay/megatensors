@@ -146,10 +146,9 @@ dataset, and Space snapshots can be attached with repeatable `-v/--volume`
 mounts; bucket and writable mounts are rejected. File transfer uses bounded
 chunks, and background processes can be inspected and stopped by PID.
 
-`mega sandbox pool create` maintains a live native template and new Sessions
-use the provider's snapshot fork operation. The current Cloud Run backend is
-explicitly one broker (`--max-hosts 1`) with capacity fixed at four native
-Sandboxes including the template; multi-broker autoscaling is not advertised.
+`mega sandbox pool create` maintains a reusable template for faster Session
+startup. Pool capacity and placement are managed by the service and may vary
+with account limits and current availability.
 
 ## Extensions and skills
 

@@ -45,9 +45,8 @@ artifact does not carry model construction metadata, pass `model_class` and
 
 ## Hub Python API
 
-The MEGA Hub client is the migrated and customized Hugging Face Hub cache stack,
-backed by Cloudflare Workers, D1, and R2 at `https://mega.tensorplay.cn`. It
-keeps content-addressed snapshots, file locks, retry logic, interrupted-download
+The MEGA Hub client connects to `https://mega.tensorplay.cn` and provides
+content-addressed snapshots, file locks, retry logic, interrupted-download
 resume, filtered snapshots, and an fsspec filesystem.
 
 ```python
@@ -61,14 +60,12 @@ with MegaFileSystem().open("mega://mega/example/model.mega", "rb") as file:
 
 Use `MEGA_ENDPOINT`, `MEGA_TOKEN`, `MEGA_HOME`, `MEGA_HUB_CACHE`, and
 `MEGA_HUB_OFFLINE` to configure the endpoint, credentials, cache, and offline mode.
-Uploads use the HF-compatible commit protocol. Files larger than 20 MiB are
-chunked and deduplicated by the official `hf_xet` runtime, stored on MEGA's
-registered native Xet CAS, and represented in Git by canonical LFS pointers.
-The `mega` and `hf` CLIs share hashes and can read each other's uploads.
+Uploads use the HF-compatible commit protocol. Large files use resumable,
+content-deduplicated transfer and canonical LFS pointers. The `mega` and `hf`
+CLIs share hashes and can read each other's uploads.
 
-`mega login` opens the Cloudflare Access-protected device authorization page
-and waits for approval. `mega login --token "$MEGA_TOKEN"` remains the
-non-interactive path for CI.
+`mega login` opens the secure device authorization page and waits for approval.
+`mega login --token "$MEGA_TOKEN"` remains the non-interactive path for CI.
 
 The `mega` CLI keeps the local artifact commands and adds Hub-style workflows
 similar to Hugging Face Hub and ModelScope:
@@ -83,9 +80,6 @@ mega discussions create mega/qwen --title "Serving notes" --body-file notes.md
 mega discussions list mega/qwen --format json
 mega snapshot mega/qwen --local-dir ./downloaded
 ```
-
-The default backend contract is implemented in `mega-hub` with
-Cloudflare Workers, R2, and D1.
 
 # KV Cache Sidecars
 

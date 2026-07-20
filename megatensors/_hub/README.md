@@ -1,7 +1,7 @@
 # MEGA Hub client
 
 `megatensors._hub` is the high-level Python client used by the `mega` CLI. It
-targets the MEGA Worker API and shares the same authentication, repository,
+targets the public MEGA API and shares the same authentication, repository,
 revision, transfer, and cache semantics.
 
 ## Download and cache
@@ -27,9 +27,8 @@ mega://spaces/namespace/repository@revision/path
 
 ## Repository API
 
-`MegaApi` provides the high-level repository workflow. It reuses the native
-route-level `MegaHubClient`, so Python and CLI operations reach the same Worker
-routes instead of maintaining separate protocol implementations.
+`MegaApi` provides the high-level repository workflow. Python and CLI
+operations share the same authenticated client and protocol behavior.
 
 ```python
 from megatensors import MegaApi
@@ -51,10 +50,9 @@ primitive.
 
 ## Repository community
 
-The community CLI keeps the familiar Hugging Face discussions vocabulary while
-using the native MEGA Worker routes and `MegaHubClient` models. Markdown can be
-provided inline, from a file, or from standard input; JSON and quiet output use
-the same shared CLI output layer as repository commands.
+The community CLI keeps the familiar Hugging Face discussions vocabulary.
+Markdown can be provided inline, from a file, or from standard input; JSON and
+quiet output use the same shared CLI output layer as repository commands.
 
 ```bash
 mega discussions list namespace/repository

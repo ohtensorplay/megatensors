@@ -8,9 +8,10 @@
 
 <p align="center">
   <a href="https://mega.tensorplay.cn/docs/hub/sdk"><img alt="Documentation" src="https://img.shields.io/website?url=https%3A%2F%2Fmega.tensorplay.cn%2Fdocs%2Fhub%2Fsdk&label=docs"></a>
+  <a href="https://github.com/ohtensorplay/megatensors/actions/workflows/package.yml"><img alt="Package" src="https://github.com/ohtensorplay/megatensors/actions/workflows/package.yml/badge.svg?branch=main"></a>
   <a href="https://github.com/ohtensorplay/megatensors/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/ohtensorplay/megatensors"></a>
   <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white">
-  <a href="https://github.com/ohtensorplay/megatensors/blob/main/LICENSE"><img alt="MIT License" src="https://img.shields.io/github/license/ohtensorplay/megatensors"></a>
+  <a href="https://github.com/ohtensorplay/megatensors/blob/main/LICENSE"><img alt="Apache-2.0 License" src="https://img.shields.io/github/license/ohtensorplay/megatensors"></a>
 </p>
 
 ---
@@ -94,4 +95,4 @@ out of the repository.
 
 ## License
 
-MIT
+Apache-2.0

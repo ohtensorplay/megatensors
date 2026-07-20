@@ -1,0 +1,250 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+      prerelease: ${{ steps.package.outputs.prerelease }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Match tag to package version
+        id: package
+        shell: bash
+        run: |
+          package_version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          expected_tag="v${package_version}"
+          if [[ "$GITHUB_REF_NAME" != "$expected_tag" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match pyproject.toml version $package_version" >&2
+            exit 1
+          fi
+          echo "version=$package_version" >> "$GITHUB_OUTPUT"
+          if [[ "$package_version" =~ (a|b|rc|dev)[0-9]+$ ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Require a commit from main
+        shell: bash
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "Release tag must point to a commit reachable from main" >&2
+            exit 1
+          fi
+
+  build-wheels:
+    name: Wheel ${{ matrix.python-version }} / ${{ matrix.platform.arch }}
+    needs: validate
+    runs-on: ${{ matrix.platform.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["cp310", "cp311", "cp312", "cp313", "cp314"]
+        platform:
+          - arch: x86_64
+            runner: ubuntu-latest
+            build: manylinux_x86_64
+            cibw_arch: x86_64
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            build: manylinux_aarch64
+            cibw_arch: aarch64
+          - arch: win_amd64
+            runner: windows-latest
+            build: win_amd64
+            cibw_arch: AMD64
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Update VC++ redistributable (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -property installationPath
+          if (-not $vs) { throw "Visual Studio installation not found" }
+          $redist = Get-ChildItem "$vs\VC\Redist\MSVC" -Recurse -Filter vc_redist.x64.exe |
+            Sort-Object { $_.VersionInfo.FileVersionRaw } | Select-Object -Last 1
+          if (-not $redist) { throw "vc_redist.x64.exe not found under $vs" }
+          $process = Start-Process -FilePath $redist.FullName -ArgumentList '/install','/quiet','/norestart' -Wait -PassThru
+          if ($process.ExitCode -notin 0, 1638, 3010) {
+            throw "vc_redist.x64.exe exited with $($process.ExitCode)"
+          }
+
+      - name: Install wheel builder
+        run: python -m pip install --upgrade cibuildwheel setuptools pybind11
+
+      - name: Build and smoke-test wheel
+        run: cibuildwheel --output-dir wheelhouse
+        env:
+          CIBW_BUILD: "${{ matrix.python-version }}-${{ matrix.platform.build }}"
+          CIBW_SKIP: "*-musllinux_* *-win32 *-manylinux_i686"
+          CIBW_ARCHS: "${{ matrix.platform.cibw_arch }}"
+          CIBW_TEST_COMMAND: "python {project}/tests/smoke_import_cpp.py"
+          CIBW_BEFORE_BUILD_WINDOWS: "pip install delvewheel"
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: "delvewheel repair --add-path C:/Windows/System32 -w {dest_dir} {wheel}"
+          CIBW_TEST_REQUIRES_WINDOWS: pefile
+          CIBW_TEST_COMMAND_WINDOWS: "python {project}/tests/dump_pyd_imports.py && python {project}/tests/smoke_import_cpp.py"
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.python-version }}-${{ matrix.platform.arch }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  build-sdist:
+    name: Source distribution
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install packaging tools
+        run: python -m pip install --upgrade build twine
+
+      - name: Build source distribution
+        run: python -m build --sdist --outdir dist
+
+      - name: Validate package metadata
+        run: python -m twine check --strict dist/*
+
+      - name: Upload source distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  assemble:
+    name: Verify release artifacts
+    needs: [validate, build-wheels, build-sdist]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Download source distribution
+        uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
+
+      - name: Verify artifact set
+        shell: bash
+        run: |
+          wheel_count=$(find dist -maxdepth 1 -type f -name '*.whl' | wc -l)
+          sdist_count=$(find dist -maxdepth 1 -type f -name '*.tar.gz' | wc -l)
+          if [[ "$wheel_count" -ne 15 || "$sdist_count" -ne 1 ]]; then
+            echo "Expected 15 wheels and 1 sdist; found $wheel_count wheels and $sdist_count sdist" >&2
+            find dist -maxdepth 1 -type f -print
+            exit 1
+          fi
+          python -m pip install --upgrade twine
+          python -m twine check --strict dist/*
+
+      - name: Upload verified release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: dist/*
+          if-no-files-found: error
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [validate, assemble]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/megatensors/${{ needs.validate.outputs.version }}/
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download verified release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist
+
+      - name: Publish with PyPI trusted publishing
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
+        with:
+          packages-dir: dist/
+          attestations: true
+          print-hash: true
+
+  github-release:
+    name: Create GitHub Release
+    needs: [validate, assemble, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist
+
+      - name: Create release and attach distributions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IS_PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+        run: |
+          release_args=(--verify-tag --generate-notes --title "$GITHUB_REF_NAME")
+          if [[ "$IS_PRERELEASE" == "true" ]]; then
+            release_args+=(--prerelease)
+          fi
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* "${release_args[@]}" --repo "$GITHUB_REPOSITORY"
+          fi

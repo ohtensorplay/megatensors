@@ -1,33 +1,97 @@
-# megatensors
+<p align="center">
+  <a href="https://mega.tensorplay.cn/">
+    <img src="https://mega.tensorplay.cn/assets/logo-D1t6EjrA.webp" alt="MEGA" width="420" />
+  </a>
+</p>
 
-`megatensors` is the public Python SDK for MEGA. Build reproducible ML
-workflows around versioned repositories, datasets, Spaces, jobs, inference,
-storage, and Xet-backed large files—all from a single, typed client.
+<p align="center"><i>The public Python SDK for building, publishing, and running with MEGA.</i></p>
 
-## Build with MEGA
+<p align="center">
+  <a href="https://mega.tensorplay.cn/docs/hub/sdk"><img alt="Documentation" src="https://img.shields.io/website?url=https%3A%2F%2Fmega.tensorplay.cn%2Fdocs%2Fhub%2Fsdk&label=docs"></a>
+  <a href="https://github.com/ohtensorplay/megatensors/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/ohtensorplay/megatensors?display_name=tag"></a>
+  <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white">
+  <a href="https://github.com/ohtensorplay/megatensors/blob/main/LICENSE"><img alt="MIT License" src="https://img.shields.io/github/license/ohtensorplay/megatensors"></a>
+</p>
 
-- Discover and publish models, datasets, and applications programmatically.
-- Move large artifacts reliably with resumable transfers and storage-aware
-  tooling.
-- Automate inference, remote Jobs, and Spaces without coupling code to
-  deployment credentials.
+---
 
-## Install
+**Documentation:** <https://mega.tensorplay.cn/docs/hub/sdk><br/>
+**Source:** <https://github.com/ohtensorplay/megatensors>
+
+---
+
+## Welcome to megatensors
+
+`megatensors` connects Python applications to MEGA repositories, datasets,
+Spaces, Jobs, inference, storage, and Xet-backed large files. It combines a
+high-level Hub client with efficient tensor loading and framework adapters, so
+the same package can move an artifact, inspect it, and load it for execution.
+
+## Key features
+
+- Discover and manage models, datasets, Spaces, and versioned repositories.
+- Download individual files or complete snapshots with a local cache.
+- Upload files and folders with resumable large-file support.
+- Run inference, remote Jobs, schedules, and Sandbox sessions.
+- Load tensors into PyTorch and Paddle through a shared API.
+- Sign and verify artifacts for reproducible distribution workflows.
+
+## Installation
+
+Install from PyPI:
 
 ```bash
 pip install megatensors
 ```
 
-For local development, install from this checkout with `pip install -e .`.
+For local development:
 
-## Scope
+```bash
+git clone https://github.com/ohtensorplay/megatensors.git
+cd megatensors
+pip install -e .
+```
 
-- `megatensors/` contains the public SDK, Hub-compatible client surface, CLI,
-  tensor loading utilities, and framework adapters.
-- `tests/` contains the client and storage contract coverage.
-- Infrastructure credentials and deployment configuration are intentionally
-  kept out of this public repository.
+## Quick start
 
-The package is MIT licensed. Service implementations live in private MEGA
-organization repositories; public users interact through this SDK and the
-documented MEGA API.
+Download a repository snapshot:
+
+```python
+from megatensors import snapshot_download
+
+local_path = snapshot_download("owner/model-name")
+print(local_path)
+```
+
+Use the typed Hub client:
+
+```python
+from megatensors import MegaApi
+
+api = MegaApi()
+models = api.list_models(search="embedding")
+for model in models:
+    print(model.id)
+```
+
+Explore the CLI:
+
+```bash
+mega --help
+```
+
+## Repository layout
+
+- `megatensors/` — SDK, CLI, Hub client, tensor loaders, and framework adapters.
+- `tests/` — API, storage, CLI, and compatibility contracts.
+- `examples/` — runnable loading, generation, and signing examples.
+
+## Contributing
+
+Issues and pull requests are welcome. Run the focused tests for the area you
+change and keep credentials, deployment configuration, and generated artifacts
+out of the repository.
+
+## License
+
+MIT

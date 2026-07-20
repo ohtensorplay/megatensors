@@ -172,7 +172,7 @@ jobs:
           CIBW_BEFORE_ALL_LINUX: "dnf install -y openssl-devel libzstd-devel"
           CIBW_BEFORE_ALL_WINDOWS: "vcpkg install zstd:x64-windows"
           CIBW_ENVIRONMENT: "CMAKE_ARGS=-DMEGATENSORS_NATIVE_OPT=OFF"
-          CIBW_ENVIRONMENT_WINDOWS: "CMAKE_ARGS='-DMEGATENSORS_NATIVE_OPT=OFF -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DCMAKE_INCLUDE_PATH=C:/vcpkg/installed/x64-windows/include'"
+          CIBW_ENVIRONMENT_WINDOWS: "CMAKE_ARGS='-DMEGATENSORS_NATIVE_OPT=OFF -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DCMAKE_CXX_FLAGS=/IC:/vcpkg/installed/x64-windows/include'"
           CIBW_TEST_COMMAND: "python {project}/tests/smoke_import_cpp.py"
           CIBW_BEFORE_BUILD_WINDOWS: "pip install delvewheel"
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: "delvewheel repair --add-path C:/Windows/System32;C:/vcpkg/installed/x64-windows/bin -w {dest_dir} {wheel}"

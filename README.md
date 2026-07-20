@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://mega.tensorplay.cn/docs/hub/sdk"><img alt="Documentation" src="https://img.shields.io/website?url=https%3A%2F%2Fmega.tensorplay.cn%2Fdocs%2Fhub%2Fsdk&label=docs"></a>
-  <a href="https://github.com/ohtensorplay/megatensors/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/ohtensorplay/megatensors?display_name=tag"></a>
+  <a href="https://github.com/ohtensorplay/megatensors/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/ohtensorplay/megatensors"></a>
   <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white">
   <a href="https://github.com/ohtensorplay/megatensors/blob/main/LICENSE"><img alt="MIT License" src="https://img.shields.io/github/license/ohtensorplay/megatensors"></a>
 </p>
@@ -38,10 +38,10 @@ the same package can move an artifact, inspect it, and load it for execution.
 
 ## Installation
 
-Install from PyPI:
+Install the current public source release:
 
 ```bash
-pip install megatensors
+pip install "megatensors @ git+https://github.com/ohtensorplay/megatensors.git@main"
 ```
 
 For local development:

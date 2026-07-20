@@ -10,10 +10,6 @@ on:
         description: Existing version tag to release
         required: true
         type: string
-      reuse_run_ids:
-        description: Comma-separated release runs whose successful artifacts should be reused
-        required: false
-        type: string
 
 concurrency:
   group: release-${{ inputs.release_tag || github.ref }}
@@ -84,24 +80,21 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
       wheel_count: ${{ steps.plan.outputs.wheel_count }}
       build_sdist: ${{ steps.plan.outputs.build_sdist }}
-      reuse_has_sdist: ${{ steps.plan.outputs.reuse_has_sdist }}
+      has_staged_assets: ${{ steps.plan.outputs.has_staged_assets }}
     steps:
       - name: Find artifacts that still need to be built
         id: plan
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          REUSE_RUN_IDS: ${{ inputs.reuse_run_ids }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          PACKAGE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          known_artifacts=""
-          for run_id in ${REUSE_RUN_IDS//,/ }; do
-            run_artifacts=$(gh api \
-                "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts" \
-                --paginate \
-                --jq '.artifacts[] | select(.expired == false) | .name')
-            known_artifacts+=$'\n'"$run_artifacts"
-          done
-          KNOWN_ARTIFACTS="$known_artifacts" python - <<'PY' >> "$GITHUB_OUTPUT"
+          staged_assets=$(gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json assets \
+            --jq '.assets[].name' 2>/dev/null || true)
+          STAGED_ASSETS="$staged_assets" python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
           import os
 
@@ -110,7 +103,24 @@ jobs:
               {"arch": "aarch64", "runner": "ubuntu-24.04-arm", "build": "manylinux_aarch64", "cibw_arch": "aarch64"},
               {"arch": "win_amd64", "runner": "windows-latest", "build": "win_amd64", "cibw_arch": "AMD64"},
           ]
-          known = set(os.environ.get("KNOWN_ARTIFACTS", "").splitlines())
+          staged = set(os.environ.get("STAGED_ASSETS", "").splitlines())
+          package_version = os.environ["PACKAGE_VERSION"]
+          known = set()
+          for filename in staged:
+              if filename == f"megatensors-{package_version}.tar.gz":
+                  known.add("sdist")
+              if not filename.startswith(f"megatensors-{package_version}-") or not filename.endswith(".whl"):
+                  continue
+              for python_version in ("cp310", "cp311", "cp312", "cp313", "cp314"):
+                  if f"-{python_version}-{python_version}-" not in filename:
+                      continue
+                  if filename.endswith("-win_amd64.whl"):
+                      known.add(f"wheels-{python_version}-win_amd64")
+                  elif filename.endswith("_aarch64.whl"):
+                      known.add(f"wheels-{python_version}-aarch64")
+                  elif filename.endswith("_x86_64.whl"):
+                      known.add(f"wheels-{python_version}-x86_64")
+
           missing = []
           for python_version in ("cp310", "cp311", "cp312", "cp313", "cp314"):
               for platform in platforms:
@@ -121,7 +131,7 @@ jobs:
           print(f"matrix={json.dumps({'include': missing}, separators=(',', ':'))}")
           print(f"wheel_count={len(missing)}")
           print(f"build_sdist={str('sdist' not in known).lower()}")
-          print(f"reuse_has_sdist={str('sdist' in known).lower()}")
+          print(f"has_staged_assets={str(bool(staged)).lower()}")
           PY
 
   build-wheels:
@@ -234,24 +244,19 @@ jobs:
       actions: read
       contents: read
     steps:
-      - name: Reuse artifacts from previous runs
-        if: inputs.reuse_run_ids != ''
+      - name: Download staged release artifacts
+        if: needs.plan.outputs.has_staged_assets == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          REUSE_RUN_IDS: ${{ inputs.reuse_run_ids }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
         run: |
-          mkdir -p dist reused
-          for run_id in ${REUSE_RUN_IDS//,/ }; do
-            mkdir -p "reused/$run_id"
-            gh run download "$run_id" \
-              --repo "$GITHUB_REPOSITORY" \
-              --pattern 'wheels-*' \
-              --pattern sdist \
-              --dir "reused/$run_id"
-          done
-          find reused -type f -name '*.whl' -exec cp {} dist/ \;
-          find reused -type f -name '*.tar.gz' -exec cp {} dist/ \;
+          mkdir -p dist
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern '*.whl' \
+            --pattern '*.tar.gz' \
+            --dir dist
 
       - name: Download newly built wheels
         if: needs.plan.outputs.wheel_count != '0'
@@ -347,7 +352,23 @@ jobs:
             release_args+=(--prerelease)
           fi
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+            existing_assets=$(gh release view "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json assets \
+              --jq '.assets[].name')
+            for file in dist/*; do
+              asset_name=${file##*/}
+              if ! grep -Fxq "$asset_name" <<< "$existing_assets"; then
+                gh release upload "$RELEASE_TAG" "$file" --repo "$GITHUB_REPOSITORY"
+              fi
+            done
+            edit_args=(--draft=false --title "$RELEASE_TAG")
+            if [[ "$IS_PRERELEASE" == "true" ]]; then
+              edit_args+=(--prerelease)
+            else
+              edit_args+=(--latest)
+            fi
+            gh release edit "$RELEASE_TAG" "${edit_args[@]}" --repo "$GITHUB_REPOSITORY"
           else
             gh release create "$RELEASE_TAG" dist/* "${release_args[@]}" --repo "$GITHUB_REPOSITORY"
           fi

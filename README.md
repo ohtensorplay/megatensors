@@ -39,7 +39,13 @@ the same package can move an artifact, inspect it, and load it for execution.
 
 ## Installation
 
-Install the current public source release:
+Install from PyPI:
+
+```bash
+pip install megatensors
+```
+
+Install the latest public source:
 
 ```bash
 pip install "megatensors @ git+https://github.com/ohtensorplay/megatensors.git@main"

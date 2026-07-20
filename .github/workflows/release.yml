@@ -75,7 +75,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: read
-      contents: read
+      contents: write
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       wheel_count: ${{ steps.plan.outputs.wheel_count }}
@@ -90,10 +90,10 @@ jobs:
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
           PACKAGE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          staged_assets=$(gh release view "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --json assets \
-            --jq '.assets[].name' 2>/dev/null || true)
+          staged_assets=$(gh api \
+            "repos/$GITHUB_REPOSITORY/releases" \
+            --paginate \
+            --jq ".[] | select(.tag_name == \"$RELEASE_TAG\") | .assets[].name")
           STAGED_ASSETS="$staged_assets" python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
           import os
@@ -242,7 +242,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: read
-      contents: read
+      contents: write
     steps:
       - name: Download staged release artifacts
         if: needs.plan.outputs.has_staged_assets == 'true'

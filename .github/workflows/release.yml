@@ -111,6 +111,8 @@ jobs:
           CIBW_BUILD: "${{ matrix.python-version }}-${{ matrix.platform.build }}"
           CIBW_SKIP: "*-musllinux_* *-win32 *-manylinux_i686"
           CIBW_ARCHS: "${{ matrix.platform.cibw_arch }}"
+          CIBW_BEFORE_ALL_LINUX: "dnf install -y openssl-devel libzstd-devel"
+          CIBW_ENVIRONMENT: "CMAKE_ARGS=-DMEGATENSORS_NATIVE_OPT=OFF"
           CIBW_TEST_COMMAND: "python {project}/tests/smoke_import_cpp.py"
           CIBW_BEFORE_BUILD_WINDOWS: "pip install delvewheel"
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: "delvewheel repair --add-path C:/Windows/System32 -w {dest_dir} {wheel}"

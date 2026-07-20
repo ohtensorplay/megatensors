@@ -215,7 +215,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install packaging tools
-        run: python -m pip install --upgrade build twine
+        run: python -m pip install --upgrade build "packaging>=24.2" twine
 
       - name: Build source distribution
         run: python -m build --sdist --outdir dist
@@ -292,7 +292,7 @@ jobs:
             find dist -maxdepth 1 -type f -print
             exit 1
           fi
-          python -m pip install --upgrade twine
+          python -m pip install --upgrade "packaging>=24.2" twine
           python -m twine check --strict dist/*
 
       - name: Upload verified release artifacts

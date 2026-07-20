@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: Apache-2.0
+
+FROM quay.io/pypa/manylinux2014_x86_64
+
+RUN python3.11 -m pip install pip wheel setuptools pybind11
+RUN python3.10 -m pip install pip wheel setuptools pybind11
+RUN python3.12 -m pip install pip wheel setuptools pybind11
+RUN python3.13 -m pip install pip wheel setuptools pybind11

@@ -1,0 +1,139 @@
+# SPDX-License-Identifier: Apache-2.0
+
+from typing import Any, Dict, List, Mapping, Optional
+
+from . import cpp as megacpp
+from .common import init_logger, resolve_runtime_lib_name
+from .frameworks import get_framework_op
+from .loader import BaseMegaTensorsFileLoader, loaded_library
+from .parallel_loader import PipelineParallel
+
+logger = init_logger(__name__)
+
+
+class ThreeFSLoader(BaseMegaTensorsFileLoader):
+    """Load .megatensors files using 3FS USRBIO for high-performance I/O."""
+
+    @classmethod
+    def process_extension_config(
+        cls, ext_config: Mapping[str, Any], **kwargs: Any
+    ) -> Dict[str, Any]:
+        """Infer ``mount_point`` from file paths if not explicitly configured."""
+        out = dict(ext_config)
+        if not out.get("mount_point") or str(out["mount_point"]).strip() == "":
+            files = kwargs.get("hf_weights_files", [])
+            if files:
+                try:
+                    from fastsafetensor_3fs_reader import extract_mount_point
+
+                    out["mount_point"] = extract_mount_point(files[0])
+                    logger.info(
+                        "Inferred 3FS mount_point=%s from file paths",
+                        out["mount_point"],
+                    )
+                except ImportError:
+                    logger.debug(
+                        "fastsafetensor_3fs_reader not available, using default mount_point"
+                    )
+        return out
+
+    def __init__(
+        self,
+        pg: Optional[Any],
+        device: str = "cpu",
+        mount_point: str = "/mnt/3fs",
+        debug_log: bool = False,
+        disable_cache: bool = True,
+        framework: str = "pytorch",
+        set_numa: bool = True,
+        **kwargs,
+    ):
+        self.framework = get_framework_op(framework)
+        self.pg = self.framework.get_process_group(pg)
+        self.device = self.framework.get_device(device, self.pg)
+
+        global loaded_library
+        if not loaded_library:
+            megacpp.load_library_functions(resolve_runtime_lib_name())
+            loaded_library = True
+        megacpp.set_debug_log(debug_log)
+        super().__init__(
+            pg,
+            self.device,
+            copier_type="3fs",
+            set_numa=set_numa,
+            disable_cache=disable_cache,
+            framework=framework,
+            mount_point=mount_point,
+            **kwargs,
+        )
+
+
+class ParallelThreeFSLoader(PipelineParallel):
+    """Parallel loader for .megatensors files using 3FS USRBIO.
+
+    This class provides pipeline-parallel loading of multiple megatensors files
+    using 3FS for high-performance I/O operations.
+
+    Args:
+        pg (Optional[Any]): Process group-like objects for distributed operations.
+        hf_weights_files (List[str]): List of megatensors files to load from 3FS.
+        mount_point (str): 3FS mount point path (e.g., "/mnt/3fs").
+        max_concurrent_producers (int): Maximum number of concurrent producer threads.
+        queue_size (int): Size of the queue for buffering loaded file batches.
+                         Default 0 for unbuffered behavior.
+        use_tqdm_on_load (bool): Enable progress bar during loading.
+        device (str): Target device for tensor loading.
+        debug_log (bool): Enable debug logs.
+        framework (str): Framework to use for tensor operations ("pytorch" or "paddle").
+        **kwargs: Additional arguments passed to the loader.
+
+    Examples:
+        >>> from megatensors.threefs_loader import ParallelThreeFSLoader
+        >>> files = ["/mnt/3fs/model-00001.megatensors", "/mnt/3fs/model-00002.megatensors"]
+        >>> loader = ParallelThreeFSLoader(
+        ...     pg=None,
+        ...     hf_weights_files=files,
+        ...     mount_point="/mnt/3fs",
+        ...     device="cuda:0"
+        ... )
+        >>> for batch in loader:
+        ...     # Process batch
+        ...     pass
+    """
+
+    def __init__(
+        self,
+        pg: Optional[Any],
+        hf_weights_files: List[str],
+        max_concurrent_producers: int = 1,
+        queue_size: int = 0,
+        use_tqdm_on_load: bool = True,
+        device: str = "cpu",
+        debug_log: bool = False,
+        framework: str = "pytorch",
+        **kwargs,
+    ):
+        from fastsafetensor_3fs_reader import extract_mount_point
+
+        mount_point: str = extract_mount_point(hf_weights_files[0])
+
+        loader = ThreeFSLoader(
+            pg,
+            device=device,
+            mount_point=mount_point,
+            disable_cache=True,
+            debug_log=debug_log,
+            framework=framework,
+            **kwargs,
+        )
+
+        super().__init__(
+            pg,
+            loader,
+            hf_weights_files,
+            max_concurrent_producers,
+            queue_size,
+            use_tqdm_on_load,
+            **kwargs,
+        )

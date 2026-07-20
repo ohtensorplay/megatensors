@@ -1,6 +1,6 @@
 [project]
 name = "megatensors"
-version = "0.0.1"
+version = "0.0.2"
 description = "High-performance MEGA tensor artifact loader"
 authors = [{name = "zlx", email = "zlx@tensorplay.cn"}]
 readme = "README.md"

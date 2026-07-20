@@ -2,7 +2,13 @@
 
 `megatensors` is the public Python SDK for MEGA, modeled around the familiar
 Hugging Face Hub developer experience while targeting MEGA repositories,
-datasets, Spaces, jobs, inference, storage, and Xet-backed large files.
+datasets, Spaces, jobs, inference, storage, and Xet-backed large files. Move
+from a familiar Hub workflow to MEGA without changing how your team thinks
+about discovery, versioned artifacts, or programmatic automation.
+
+`megatensors` is an independent SDK. It is not affiliated with or endorsed by
+Hugging Face; compatibility claims apply only where the documented API surface
+explicitly says so.
 
 ## Install
 

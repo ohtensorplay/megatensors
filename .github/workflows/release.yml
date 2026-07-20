@@ -4,9 +4,19 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing version tag to release
+        required: true
+        type: string
+      reuse_run_id:
+        description: Previous release run whose successful artifacts should be reused
+        required: false
+        type: string
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.release_tag || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -16,6 +26,7 @@ jobs:
     permissions:
       contents: read
     outputs:
+      tag: ${{ steps.package.outputs.tag }}
       version: ${{ steps.package.outputs.version }}
       prerelease: ${{ steps.package.outputs.prerelease }}
     steps:
@@ -23,6 +34,7 @@ jobs:
         uses: actions/checkout@v7.0.0
         with:
           fetch-depth: 0
+          ref: ${{ inputs.release_tag || github.ref_name }}
 
       - name: Set up Python
         uses: actions/setup-python@v7.0.0
@@ -32,13 +44,16 @@ jobs:
       - name: Match tag to package version
         id: package
         shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           package_version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
           expected_tag="v${package_version}"
-          if [[ "$GITHUB_REF_NAME" != "$expected_tag" ]]; then
-            echo "Tag $GITHUB_REF_NAME does not match pyproject.toml version $package_version" >&2
+          if [[ "$RELEASE_TAG" != "$expected_tag" ]]; then
+            echo "Tag $RELEASE_TAG does not match pyproject.toml version $package_version" >&2
             exit 1
           fi
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "version=$package_version" >> "$GITHUB_OUTPUT"
           if [[ "$package_version" =~ (a|b|rc|dev)[0-9]+$ ]]; then
             echo "prerelease=true" >> "$GITHUB_OUTPUT"
@@ -48,39 +63,81 @@ jobs:
 
       - name: Require a commit from main
         shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.package.outputs.tag }}
         run: |
           git fetch origin main
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+          tag_sha=$(git rev-list -n 1 "$RELEASE_TAG")
+          if ! git merge-base --is-ancestor "$tag_sha" origin/main; then
             echo "Release tag must point to a commit reachable from main" >&2
             exit 1
           fi
 
-  build-wheels:
-    name: Wheel ${{ matrix.python-version }} / ${{ matrix.platform.arch }}
+  plan:
+    name: Plan missing artifacts
     needs: validate
-    runs-on: ${{ matrix.platform.runner }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      wheel_count: ${{ steps.plan.outputs.wheel_count }}
+      build_sdist: ${{ steps.plan.outputs.build_sdist }}
+      reuse_has_sdist: ${{ steps.plan.outputs.reuse_has_sdist }}
+    steps:
+      - name: Find artifacts that still need to be built
+        id: plan
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REUSE_RUN_ID: ${{ inputs.reuse_run_id }}
+        run: |
+          known_artifacts=""
+          if [[ -n "$REUSE_RUN_ID" ]]; then
+            known_artifacts=$(gh api \
+              "repos/$GITHUB_REPOSITORY/actions/runs/$REUSE_RUN_ID/artifacts" \
+              --paginate \
+              --jq '.artifacts[] | select(.expired == false) | .name')
+          fi
+          KNOWN_ARTIFACTS="$known_artifacts" python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+
+          platforms = [
+              {"arch": "x86_64", "runner": "ubuntu-latest", "build": "manylinux_x86_64", "cibw_arch": "x86_64"},
+              {"arch": "aarch64", "runner": "ubuntu-24.04-arm", "build": "manylinux_aarch64", "cibw_arch": "aarch64"},
+              {"arch": "win_amd64", "runner": "windows-latest", "build": "win_amd64", "cibw_arch": "AMD64"},
+          ]
+          known = set(os.environ.get("KNOWN_ARTIFACTS", "").splitlines())
+          missing = []
+          for python_version in ("cp310", "cp311", "cp312", "cp313", "cp314"):
+              for platform in platforms:
+                  artifact = f"wheels-{python_version}-{platform['arch']}"
+                  if artifact not in known:
+                      missing.append({"python_version": python_version, **platform})
+
+          print(f"matrix={json.dumps({'include': missing}, separators=(',', ':'))}")
+          print(f"wheel_count={len(missing)}")
+          print(f"build_sdist={str('sdist' not in known).lower()}")
+          print(f"reuse_has_sdist={str('sdist' in known).lower()}")
+          PY
+
+  build-wheels:
+    name: Wheel ${{ matrix.python_version }} / ${{ matrix.arch }}
+    needs: [validate, plan]
+    if: needs.plan.outputs.wheel_count != '0'
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
     strategy:
       fail-fast: false
-      matrix:
-        python-version: ["cp310", "cp311", "cp312", "cp313", "cp314"]
-        platform:
-          - arch: x86_64
-            runner: ubuntu-latest
-            build: manylinux_x86_64
-            cibw_arch: x86_64
-          - arch: aarch64
-            runner: ubuntu-24.04-arm
-            build: manylinux_aarch64
-            cibw_arch: aarch64
-          - arch: win_amd64
-            runner: windows-latest
-            build: win_amd64
-            cibw_arch: AMD64
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
 
       - name: Set up Python
         uses: actions/setup-python@v7.0.0
@@ -108,33 +165,38 @@ jobs:
       - name: Build and smoke-test wheel
         run: cibuildwheel --output-dir wheelhouse
         env:
-          CIBW_BUILD: "${{ matrix.python-version }}-${{ matrix.platform.build }}"
+          CIBW_BUILD: "${{ matrix.python_version }}-${{ matrix.build }}"
           CIBW_SKIP: "*-musllinux_* *-win32 *-manylinux_i686"
-          CIBW_ARCHS: "${{ matrix.platform.cibw_arch }}"
+          CIBW_ARCHS: "${{ matrix.cibw_arch }}"
           CIBW_BEFORE_ALL_LINUX: "dnf install -y openssl-devel libzstd-devel"
+          CIBW_BEFORE_ALL_WINDOWS: "vcpkg install zstd:x64-windows"
           CIBW_ENVIRONMENT: "CMAKE_ARGS=-DMEGATENSORS_NATIVE_OPT=OFF"
+          CIBW_ENVIRONMENT_WINDOWS: "CMAKE_ARGS='-DMEGATENSORS_NATIVE_OPT=OFF -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake'"
           CIBW_TEST_COMMAND: "python {project}/tests/smoke_import_cpp.py"
           CIBW_BEFORE_BUILD_WINDOWS: "pip install delvewheel"
-          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: "delvewheel repair --add-path C:/Windows/System32 -w {dest_dir} {wheel}"
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: "delvewheel repair --add-path C:/Windows/System32;C:/vcpkg/installed/x64-windows/bin -w {dest_dir} {wheel}"
           CIBW_TEST_REQUIRES_WINDOWS: pefile
           CIBW_TEST_COMMAND_WINDOWS: "python {project}/tests/dump_pyd_imports.py && python {project}/tests/smoke_import_cpp.py"
 
       - name: Upload wheel
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: wheels-${{ matrix.python-version }}-${{ matrix.platform.arch }}
+          name: wheels-${{ matrix.python_version }}-${{ matrix.arch }}
           path: wheelhouse/*.whl
           if-no-files-found: error
 
   build-sdist:
     name: Source distribution
-    needs: validate
+    needs: [validate, plan]
+    if: needs.plan.outputs.build_sdist == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - name: Check out repository
         uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
 
       - name: Set up Python
         uses: actions/setup-python@v7.0.0
@@ -159,19 +221,49 @@ jobs:
 
   assemble:
     name: Verify release artifacts
-    needs: [validate, build-wheels, build-sdist]
+    needs: [validate, plan, build-wheels, build-sdist]
+    if: >-
+      always() &&
+      needs.validate.result == 'success' &&
+      needs.plan.result == 'success' &&
+      (needs.build-wheels.result == 'success' || needs.build-wheels.result == 'skipped') &&
+      (needs.build-sdist.result == 'success' || needs.build-sdist.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
     steps:
-      - name: Download wheels
+      - name: Reuse wheels from previous run
+        if: inputs.reuse_run_id != ''
+        uses: actions/download-artifact@v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.reuse_run_id }}
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Download newly built wheels
+        if: needs.plan.outputs.wheel_count != '0'
         uses: actions/download-artifact@v8.0.1
         with:
           pattern: wheels-*
           path: dist
           merge-multiple: true
 
-      - name: Download source distribution
+      - name: Reuse source distribution from previous run
+        if: needs.plan.outputs.reuse_has_sdist == 'true'
+        uses: actions/download-artifact@v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.reuse_run_id }}
+          name: sdist
+          path: dist
+
+      - name: Download newly built source distribution
+        if: needs.plan.outputs.build_sdist == 'true'
         uses: actions/download-artifact@v8.0.1
         with:
           name: sdist
@@ -179,11 +271,20 @@ jobs:
 
       - name: Verify artifact set
         shell: bash
+        env:
+          PACKAGE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           wheel_count=$(find dist -maxdepth 1 -type f -name '*.whl' | wc -l)
           sdist_count=$(find dist -maxdepth 1 -type f -name '*.tar.gz' | wc -l)
           if [[ "$wheel_count" -ne 15 || "$sdist_count" -ne 1 ]]; then
             echo "Expected 15 wheels and 1 sdist; found $wheel_count wheels and $sdist_count sdist" >&2
+            find dist -maxdepth 1 -type f -print
+            exit 1
+          fi
+          unexpected_wheels=$(find dist -maxdepth 1 -type f -name '*.whl' ! -name "megatensors-${PACKAGE_VERSION}-*.whl" | wc -l)
+          expected_sdist="dist/megatensors-${PACKAGE_VERSION}.tar.gz"
+          if [[ "$unexpected_wheels" -ne 0 || ! -f "$expected_sdist" ]]; then
+            echo "Reused artifacts do not match megatensors $PACKAGE_VERSION" >&2
             find dist -maxdepth 1 -type f -print
             exit 1
           fi
@@ -240,13 +341,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           IS_PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
         run: |
-          release_args=(--verify-tag --generate-notes --title "$GITHUB_REF_NAME")
+          release_args=(--verify-tag --generate-notes --title "$RELEASE_TAG")
           if [[ "$IS_PRERELEASE" == "true" ]]; then
             release_args+=(--prerelease)
           fi
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$GITHUB_REF_NAME" dist/* "${release_args[@]}" --repo "$GITHUB_REPOSITORY"
+            gh release create "$RELEASE_TAG" dist/* "${release_args[@]}" --repo "$GITHUB_REPOSITORY"
           fi

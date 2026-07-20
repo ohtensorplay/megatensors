@@ -305,6 +305,10 @@ jobs:
   publish-pypi:
     name: Publish to PyPI
     needs: [validate, assemble]
+    if: >-
+      always() &&
+      needs.validate.result == 'success' &&
+      needs.assemble.result == 'success'
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -330,6 +334,11 @@ jobs:
   github-release:
     name: Create GitHub Release
     needs: [validate, assemble, publish-pypi]
+    if: >-
+      always() &&
+      needs.validate.result == 'success' &&
+      needs.assemble.result == 'success' &&
+      needs.publish-pypi.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write

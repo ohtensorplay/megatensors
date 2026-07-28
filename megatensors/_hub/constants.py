@@ -131,31 +131,35 @@ REPO_ID_SEPARATOR = "--"
 REPO_TYPE_DATASET = "dataset"
 REPO_TYPE_SPACE = "space"
 REPO_TYPE_MODEL = "model"
+REPO_TYPE_MCP = "mcp"
 REPO_TYPE_KERNEL = "kernel"
-REPO_TYPES = [None, REPO_TYPE_MODEL, REPO_TYPE_DATASET, REPO_TYPE_SPACE]
+REPO_TYPES = [None, REPO_TYPE_MODEL, REPO_TYPE_DATASET, REPO_TYPE_SPACE, REPO_TYPE_MCP]
 REPO_TYPES_WITH_KERNEL = REPO_TYPES + [REPO_TYPE_KERNEL]
 SPACES_SDK_TYPES = ["gradio", "streamlit", "docker", "static"]
 
 REPO_TYPES_URL_PREFIXES = {
     REPO_TYPE_DATASET: "datasets/",
     REPO_TYPE_SPACE: "spaces/",
+    REPO_TYPE_MCP: "mcp/",
     REPO_TYPE_KERNEL: "kernels/",
 }
 REPO_TYPES_MAPPING = {
     "datasets": REPO_TYPE_DATASET,
     "spaces": REPO_TYPE_SPACE,
+    "mcp": REPO_TYPE_MCP,
     "models": REPO_TYPE_MODEL,
     "kernels": REPO_TYPE_KERNEL,
 }
 
 # MEGA Hub URI protocol.
 MEGA_PROTOCOL = "mega://"
-MegaUriType = Literal["model", "dataset", "space", "kernel", "bucket"]
+MegaUriType = Literal["model", "dataset", "space", "mcp", "kernel", "bucket"]
 # Maps the plural MEGA URI prefix (e.g. ``datasets/``) to the canonical type.
 MEGA_URI_TYPE_PREFIXES: dict[str, MegaUriType] = {
     "models": "model",
     "datasets": "dataset",
     "spaces": "space",
+    "mcp": "mcp",
     "kernels": "kernel",
     "buckets": "bucket",
 }

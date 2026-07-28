@@ -3957,7 +3957,7 @@ class MegaApi:
         _ = timeout
         if repo_type == "kernel":
             raise ValueError("MEGA Hub does not expose kernel repositories.")
-        if repo_type not in (None, "model", "dataset", "space"):
+        if repo_type not in (None, "model", "dataset", "space", "mcp"):
             raise ValueError("Unsupported repository type.")
         if expand:
             raise ValueError("Expanded repository properties are not available on MEGA Hub yet.")

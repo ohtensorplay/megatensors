@@ -19,6 +19,12 @@ def test_worker_resolve_url_keeps_dataset_repo_id_two_segments():
     )
 
 
+def test_worker_resolve_url_supports_mcp_repository_files():
+    assert mega_hub_url("mega/xpuoj", "README.md", repo_type="mcp") == (
+        "https://mega.tensorplay.cn/api/repos/mega/xpuoj/resolve/README.md?revision=main"
+    )
+
+
 def test_download_uses_mega_uri_and_worker_repo_id(monkeypatch):
     calls = []
 
@@ -46,6 +52,24 @@ def test_download_uses_mega_uri_and_worker_repo_id(monkeypatch):
             "dry_run": False,
         }
     ]
+
+
+def test_download_supports_mcp_companion_repository(monkeypatch):
+    calls = []
+
+    def fake_snapshot_download(**kwargs):
+        calls.append(kwargs)
+        return "/tmp/xpuoj"
+
+    monkeypatch.setattr(
+        "megatensors._hub.cli.download.snapshot_download", fake_snapshot_download
+    )
+
+    download("mega://mcp/mega/xpuoj", local_dir="/tmp/xpuoj")
+
+    assert calls[0]["repo_id"] == "mega/xpuoj"
+    assert calls[0]["repo_type"] == "mcp"
+    assert calls[0]["local_dir"] == "/tmp/xpuoj"
 
 
 def test_download_rejects_non_mega_uri():

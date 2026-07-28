@@ -30,6 +30,7 @@ from megatensors._hub.cli.models import datasets_cli, models_cli, spaces_cli
 from megatensors._hub.cli.papers import papers_cli
 from megatensors._hub.cli.repos import repo_files_cli, repos_cli
 from megatensors._hub.cli.jobs import jobs_cli
+from megatensors._hub.cli.mcp import mcp_cli
 from megatensors._hub.cli.webhooks import webhooks_cli
 from megatensors._hub.cli.extensions import ExtensionsAwareGroup, extensions_cli
 from megatensors._hub.cli.sandbox import sandbox_cli
@@ -143,6 +144,7 @@ app.add_group(spaces_cli, name="spaces")
 app.add_group(repos_cli, name="repos")
 app.add_group(repo_files_cli, name="repo-files")
 app.add_group(jobs_cli, name="jobs")
+app.add_group(mcp_cli, name="mcp")
 app.add_group(webhooks_cli, name="webhooks")
 app.add_group(sandbox_cli, name="sandbox")
 app.add_group(extensions_cli, name="extensions | ext")

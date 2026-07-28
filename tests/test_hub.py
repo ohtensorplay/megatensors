@@ -360,6 +360,59 @@ def test_hub_api_consumes_repo_and_file_pagination():
     assert "cursor=file-page-2" in paths[3]
 
 
+def test_hub_api_reads_mcp_marketplace_contract():
+    calls = []
+    listing = {
+        "repo_id": "mega/xpuoj",
+        "title": "XPUOJ",
+        "summary": "Contest tools",
+        "description": "README-backed companion",
+        "category": "developer-tools",
+        "tags": ["xpuoj", "judge"],
+        "price_per_call": 1,
+        "status": "published",
+        "url": "https://mega.tensorplay.cn/mcp/mega/xpuoj",
+        "endpoint": "https://mega.tensorplay.cn/mcp",
+        "owner": {"handle": "mega", "display_name": "MEGA"},
+        "runtime": {
+            "kind": "official_worker",
+            "sdk": "cloudflare-worker",
+            "stage": "RUNNING",
+            "available": True,
+        },
+        "stats": {"calls": 4, "consumers": 2, "earned": 4},
+        "created_at": "2026-07-28T00:00:00Z",
+        "updated_at": "2026-07-28T00:00:00Z",
+        "published_at": "2026-07-28T00:00:00Z",
+        "editable": False,
+    }
+
+    class RecordingApi(MegaHubClient):
+        def _request_json(self, method, path, **kwargs):  # type: ignore[override]
+            calls.append((method, path, kwargs))
+            if path.startswith("/api/mcp/marketplace?"):
+                return {"listings": [listing]}
+            return listing
+
+    client = RecordingApi(endpoint="https://hub.example.test")
+    found = client.list_mcp_marketplace(
+        search="online judge", category="developer-tools", limit=1
+    )
+    detail = client.get_mcp_marketplace("mega/xpuoj")
+
+    assert found[0].repo_id == "mega/xpuoj"
+    assert found[0].runtime_kind == "official_worker"
+    assert detail.endpoint == "https://mega.tensorplay.cn/mcp"
+    assert calls == [
+        (
+            "GET",
+            "/api/mcp/marketplace?q=online+judge&category=developer-tools",
+            {},
+        ),
+        ("GET", "/api/mcp/marketplace/mega/xpuoj", {}),
+    ]
+
+
 def test_upload_folder_sync_adds_and_deletes_in_one_commit(tmp_path):
     root = tmp_path / "folder"
     root.mkdir()

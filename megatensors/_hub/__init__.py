@@ -164,6 +164,7 @@ _SUBMOD_ATTRS = {
         "MEGA_URL_TEMPLATE",
         "PYTORCH_WEIGHTS_NAME",
         "REPO_TYPE_DATASET",
+        "REPO_TYPE_MCP",
         "REPO_TYPE_MODEL",
         "REPO_TYPE_SPACE",
         "TF2_WEIGHTS_NAME",
@@ -834,6 +835,7 @@ __all__ = [
     "QuestionAnsweringOutputElement",
     "QuestionAnsweringParameters",
     "REPO_TYPE_DATASET",
+    "REPO_TYPE_MCP",
     "REPO_TYPE_MODEL",
     "REPO_TYPE_SPACE",
     "RepoCard",
@@ -1403,6 +1405,7 @@ if TYPE_CHECKING:  # pragma: no cover
         MEGA_URL_TEMPLATE,  # noqa: F401
         PYTORCH_WEIGHTS_NAME,  # noqa: F401
         REPO_TYPE_DATASET,  # noqa: F401
+        REPO_TYPE_MCP,  # noqa: F401
         REPO_TYPE_MODEL,  # noqa: F401
         REPO_TYPE_SPACE,  # noqa: F401
         TF2_WEIGHTS_NAME,  # noqa: F401

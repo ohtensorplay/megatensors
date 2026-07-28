@@ -23,6 +23,7 @@ MEGA repository URIs use the `mega://` scheme:
 mega://models/namespace/repository@revision/path
 mega://datasets/namespace/repository@revision/path
 mega://spaces/namespace/repository@revision/path
+mega://mcp/namespace/repository@revision/path
 ```
 
 ## Repository API

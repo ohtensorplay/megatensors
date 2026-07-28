@@ -81,7 +81,7 @@ class MegaUri:
 
     Attributes:
         type (`str`):
-            One of 'model', 'dataset', 'space', 'kernel' or 'bucket'.
+            One of 'model', 'dataset', 'space', 'mcp', 'kernel' or 'bucket'.
         id (`str`):
             The repository id ('namespace/name', e.g. 'my-org/my-model') for repo URIs, or the bucket id ('namespace/name') for bucket URIs.
         revision (`str`, *optional*):
@@ -131,7 +131,7 @@ class MegaUri:
 
     @property
     def is_repo(self) -> bool:
-        """True if this URI points at a repository (model, dataset, space or kernel)."""
+        """True if this URI points at a repository (model, dataset, space, MCP or kernel)."""
         return self.type != "bucket"
 
     def to_uri(self) -> str:

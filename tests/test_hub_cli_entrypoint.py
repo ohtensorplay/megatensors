@@ -27,6 +27,7 @@ def test_mega_hub_cli_exposes_migrated_commands():
         "env",
         "extensions",
         "jobs",
+        "mcp",
         "models",
         "papers",
         "repos",

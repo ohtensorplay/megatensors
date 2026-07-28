@@ -160,6 +160,33 @@ class RepoInfo:
 
 
 @dataclass(frozen=True)
+class McpMarketplaceInfo:
+    repo_id: str
+    title: str
+    summary: str
+    description: str
+    category: str
+    tags: tuple[str, ...]
+    price_per_call: int
+    status: str
+    url: str
+    endpoint: str
+    owner_handle: str
+    owner_display_name: str
+    runtime_kind: str
+    runtime_sdk: Optional[str]
+    runtime_stage: Optional[str]
+    runtime_available: bool
+    calls: int
+    consumers: int
+    earned: int
+    created_at: str
+    updated_at: str
+    published_at: Optional[str]
+    editable: bool
+
+
+@dataclass(frozen=True)
 class FileInfo:
     path: str
     size: int
@@ -546,6 +573,40 @@ class MegaHubClient(JobsClientMixin):
     def repo_info(self, repo_id: str) -> RepoInfo:
         data = self._request_json("GET", f"/api/repos/{_quote_repo_id(repo_id)}")
         return _repo_info(data)
+
+    def list_mcp_marketplace(
+        self,
+        *,
+        search: Optional[str] = None,
+        category: Optional[str] = None,
+        limit: int = 80,
+    ) -> list[McpMarketplaceInfo]:
+        """List published MCP marketplace entries visible to the caller."""
+        requested = int(limit)
+        if requested <= 0:
+            return []
+        query: dict[str, str] = {}
+        if search:
+            query["q"] = search
+        if category:
+            query["category"] = category
+        suffix = f"?{urllib.parse.urlencode(query)}" if query else ""
+        data = self._request_json("GET", f"/api/mcp/marketplace{suffix}")
+        raw_listings = data.get("listings", [])
+        if not isinstance(raw_listings, list):
+            raise MegaHubError("expected MCP marketplace listings")
+        return [
+            _mcp_marketplace_info(item)
+            for item in raw_listings[: min(requested, 80)]
+            if isinstance(item, Mapping)
+        ]
+
+    def get_mcp_marketplace(self, repo_id: str) -> McpMarketplaceInfo:
+        """Get one published MCP marketplace entry."""
+        data = self._request_json(
+            "GET", f"/api/mcp/marketplace/{_quote_repo_id(repo_id)}"
+        )
+        return _mcp_marketplace_info(data)
 
     def delete_repo(self, repo_id: str) -> None:
         self._request("DELETE", f"/api/repos/{_quote_repo_id(repo_id)}", auth=True)
@@ -1896,6 +1957,47 @@ def _repo_info(data: Mapping[str, Any]) -> RepoInfo:
         license=str(data.get("license", "")),
         likes=int(data.get("likes", 0)),
         downloads=int(data.get("downloads", 0)),
+    )
+
+
+def _mcp_marketplace_info(data: Mapping[str, Any]) -> McpMarketplaceInfo:
+    owner = data.get("owner")
+    runtime = data.get("runtime")
+    stats = data.get("stats")
+    if not isinstance(owner, Mapping):
+        raise MegaHubError("expected MCP marketplace owner")
+    if not isinstance(runtime, Mapping):
+        raise MegaHubError("expected MCP marketplace runtime")
+    if not isinstance(stats, Mapping):
+        raise MegaHubError("expected MCP marketplace stats")
+    return McpMarketplaceInfo(
+        repo_id=str(data["repo_id"]),
+        title=str(data.get("title", "")),
+        summary=str(data.get("summary", "")),
+        description=str(data.get("description", "")),
+        category=str(data.get("category", "")),
+        tags=tuple(str(tag) for tag in data.get("tags", []) or []),
+        price_per_call=int(data.get("price_per_call", 0)),
+        status=str(data.get("status", "")),
+        url=str(data.get("url", "")),
+        endpoint=str(data.get("endpoint", "")),
+        owner_handle=str(owner.get("handle", "")),
+        owner_display_name=str(owner.get("display_name", "")),
+        runtime_kind=str(runtime.get("kind", "")),
+        runtime_sdk=None if runtime.get("sdk") is None else str(runtime["sdk"]),
+        runtime_stage=None
+        if runtime.get("stage") is None
+        else str(runtime["stage"]),
+        runtime_available=bool(runtime.get("available", False)),
+        calls=int(stats.get("calls", 0)),
+        consumers=int(stats.get("consumers", 0)),
+        earned=int(stats.get("earned", 0)),
+        created_at=str(data.get("created_at", "")),
+        updated_at=str(data.get("updated_at", "")),
+        published_at=None
+        if data.get("published_at") is None
+        else str(data["published_at"]),
+        editable=bool(data.get("editable", False)),
     )
 
 

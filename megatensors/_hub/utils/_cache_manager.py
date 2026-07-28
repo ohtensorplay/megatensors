@@ -734,9 +734,9 @@ def _scan_cached_repo(repo_path: Path) -> CachedRepoInfo:
     repo_type = repo_type[:-1]  # "models" -> "model"
     repo_id = repo_id.replace("--", "/")  # google/fleurs -> "google/fleurs"
 
-    if repo_type not in {"dataset", "model", "space"}:
+    if repo_type not in {"dataset", "model", "space", "mcp"}:
         raise CorruptedCacheException(
-            f"Repo type must be `dataset`, `model` or `space`, found `{repo_type}` ({repo_path})."
+            f"Repo type must be `dataset`, `model`, `space` or `mcp`, found `{repo_type}` ({repo_path})."
         )
 
     blob_stats: dict[Path, os.stat_result] = {}  # Key is blob_path, value is blob stats

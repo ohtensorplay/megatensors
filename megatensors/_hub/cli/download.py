@@ -41,7 +41,12 @@ DOWNLOAD_EXAMPLES = [
 ]
 
 _MEGA_PROTOCOL = "mega://"
-_MEGA_REPO_TYPES = {RepoType.model.value, RepoType.dataset.value, RepoType.space.value}
+_MEGA_REPO_TYPES = {
+    RepoType.model.value,
+    RepoType.dataset.value,
+    RepoType.space.value,
+    RepoType.mcp.value,
+}
 
 
 def _human_status(message: str) -> None:
@@ -54,6 +59,7 @@ def _repo_type_label(repo_type: str) -> str:
         RepoType.model.value: "Model",
         RepoType.dataset.value: "Dataset",
         RepoType.space.value: "Space",
+        RepoType.mcp.value: "MCP",
     }.get(repo_type, repo_type.title())
 
 
@@ -69,11 +75,11 @@ def _parse_mega_uri(value: str):
     except MegaUriError as error:
         raise CLIError(
             "Invalid MEGA repository URI. Expected "
-            "`mega://[models|datasets|spaces]/namespace/repository[@revision][/path]`."
+            "`mega://[models|datasets|spaces|mcp]/namespace/repository[@revision][/path]`."
         ) from error
     if uri.is_bucket or uri.type not in _MEGA_REPO_TYPES:
         raise CLIError(
-            "MEGA download supports model, dataset, and space repositories only."
+            "MEGA download supports model, dataset, space, and MCP repositories only."
         )
     return uri
 

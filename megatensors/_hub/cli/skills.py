@@ -72,7 +72,7 @@ def build_skill_md() -> str:
     lines = [
         "---",
         "name: mega-cli",
-        'description: "Use the MEGA Hub CLI to manage models, datasets, Spaces, buckets, Jobs, sandboxes, repositories, inference, extensions, and skills."',
+        'description: "Use the MEGA Hub CLI to manage models, datasets, Spaces, MCPs, buckets, Jobs, sandboxes, repositories, inference, extensions, and skills."',
         "---",
         "",
         "The `mega` command is available. Authenticate with `mega auth login` or `MEGA_TOKEN`.",

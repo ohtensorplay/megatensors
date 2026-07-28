@@ -87,6 +87,7 @@ def test_mcp_install_is_atomic_and_never_executes_publisher_code(
     )
 
     def fake_snapshot(self, repo_id, *, local_dir, **kwargs):
+        assert kwargs["exclude"] == mcp.MCP_COMPANION_EXCLUDES
         target = Path(local_dir)
         target.mkdir(parents=True)
         (target / "README.md").write_text("# XPUOJ\n", encoding="utf-8")

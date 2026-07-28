@@ -18,6 +18,7 @@ from ._output import OutputFormat, out
 
 MCP_INSTALL_ROOT = Path("~/.local/share/mega/mcp")
 MANAGED_MARKER = ".mega-mcp.json"
+MCP_COMPANION_EXCLUDES = (".git*", "**/.git*")
 _REPO_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,95}")
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -90,6 +91,7 @@ def _install_companion(
             repo_id,
             local_dir=staged,
             revision=revision,
+            exclude=MCP_COMPANION_EXCLUDES,
             force=True,
             max_workers=max_workers,
         )

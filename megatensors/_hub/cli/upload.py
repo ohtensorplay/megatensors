@@ -11,7 +11,7 @@ import click
 from megatensors._hub import CommitScheduler, MegaApi
 from megatensors._hub.utils import DEFAULT_IGNORE_PATTERNS, filter_repo_objects
 
-from ._cli_utils import RepoIdArg, RepoType, RepoTypeOpt, TokenOpt
+from ._cli_utils import RepoIdArg, RepoStorageType, RepoStorageTypeOpt, TokenOpt
 from ._framework import Argument, Option
 from ._output import out
 
@@ -39,7 +39,7 @@ def upload(
         str | None,
         Argument(help="Remote path. Defaults to the local basename."),
     ] = None,
-    repo_type: RepoTypeOpt = RepoType.model,
+    repo_type: RepoStorageTypeOpt = RepoStorageType.model,
     revision: Annotated[
         str,
         Option("--revision", "-r", help="Branch, tag, or commit revision."),
@@ -342,7 +342,7 @@ def _report_upload(
 def upload_large_folder(
     repo_id: RepoIdArg,
     local_path: Annotated[Path, Argument(help="Local directory to upload.")],
-    repo_type: RepoTypeOpt = RepoType.model,
+    repo_type: RepoStorageTypeOpt = RepoStorageType.model,
     revision: Annotated[str, Option("--revision", "-r", help="Branch, tag, or commit revision.")] = "main",
     private: Annotated[
         bool,

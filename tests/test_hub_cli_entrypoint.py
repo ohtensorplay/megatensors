@@ -46,6 +46,22 @@ def test_mega_hub_cli_exposes_migrated_commands():
     }
 
 
+def test_repository_mutations_do_not_offer_marketplace_mcp_as_a_storage_type():
+    runner = CliRunner()
+
+    create_help = runner.invoke(
+        mega.app, ["repos", "create", "--help"], prog_name="mega"
+    )
+    upload_help = runner.invoke(mega.app, ["upload", "--help"], prog_name="mega")
+
+    assert create_help.exit_code == 0, create_help.output
+    assert upload_help.exit_code == 0, upload_help.output
+    assert "[model|dataset|space]" in create_help.output
+    assert "[model|dataset|space]" in upload_help.output
+    assert "[model|dataset|space|mcp]" not in create_help.output
+    assert "[model|dataset|space|mcp]" not in upload_help.output
+
+
 def test_mega_entrypoint_is_the_native_registry():
     assert mega.main.__module__ == "megatensors._hub.cli.mega"
     assert mega.app.help == "MEGA Hub CLI"

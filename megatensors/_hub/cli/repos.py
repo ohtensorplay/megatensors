@@ -14,7 +14,15 @@ from megatensors.hub import MegaHubClient, MegaHubError
 from megatensors._hub.errors import CLIError
 
 from ._cp import make_cp
-from ._cli_utils import RepoIdArg, RepoType, RepoTypeOpt, RevisionOpt, TokenOpt, typer_factory
+from ._cli_utils import (
+    RepoIdArg,
+    RepoStorageType,
+    RepoStorageTypeOpt,
+    RepoType,
+    RevisionOpt,
+    TokenOpt,
+    typer_factory,
+)
 from ._framework import Argument, Option
 from ._output import out
 
@@ -95,7 +103,7 @@ def repo_list(
 @_worker_errors_as_cli_errors
 def repo_create(
     repo_id: RepoIdArg,
-    repo_type: RepoTypeOpt = RepoType.model,
+    repo_type: RepoStorageTypeOpt = RepoStorageType.model,
     private: Annotated[bool, Option("--private", help="Create a private repository.")] = False,
     public: Annotated[bool, Option("--public", help="Create a public repository.")] = False,
     description: Annotated[str, Option("--description", help="Repository description.")] = "",

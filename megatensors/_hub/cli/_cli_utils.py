@@ -604,6 +604,14 @@ class RepoType(str, Enum):
     mcp = "mcp"
 
 
+class RepoStorageType(str, Enum):
+    """Physical repository types accepted by the Hub storage API."""
+
+    model = "model"
+    dataset = "dataset"
+    space = "space"
+
+
 RepoIdArg = Annotated[
     str,
     Argument(
@@ -631,6 +639,16 @@ RepoTypeOptionalOpt = Annotated[
         "--repo-type",
         help="The type of repository (model, dataset, space, or mcp).",
         show_default="model",
+    ),
+]
+
+
+RepoStorageTypeOpt = Annotated[
+    RepoStorageType,
+    Option(
+        "--type",
+        "--repo-type",
+        help="The physical repository type (model, dataset, or space).",
     ),
 ]
 

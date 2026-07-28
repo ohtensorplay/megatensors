@@ -606,7 +606,10 @@ class MegaHubClient(JobsClientMixin):
         data = self._request_json(
             "GET", f"/api/mcps/marketplace/{_quote_repo_id(repo_id)}"
         )
-        return _mcp_marketplace_info(data)
+        listing = data.get("listing", data)
+        if not isinstance(listing, Mapping):
+            raise MegaHubError("expected MCP marketplace listing")
+        return _mcp_marketplace_info(listing)
 
     def delete_repo(self, repo_id: str) -> None:
         self._request("DELETE", f"/api/repos/{_quote_repo_id(repo_id)}", auth=True)

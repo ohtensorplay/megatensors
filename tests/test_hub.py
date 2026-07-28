@@ -392,7 +392,7 @@ def test_hub_api_reads_mcp_marketplace_contract():
             calls.append((method, path, kwargs))
             if path.startswith("/api/mcps/marketplace?"):
                 return {"listings": [listing]}
-            return listing
+            return {"listing": listing}
 
     client = RecordingApi(endpoint="https://hub.example.test")
     found = client.list_mcp_marketplace(

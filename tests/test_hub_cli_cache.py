@@ -11,6 +11,7 @@ from megatensors.hub import FileInfo
 
 def test_cache_rm_accepts_only_mega_repository_uris():
     assert cache._repo_cache_id_from_target("mega://datasets/mega/demo") == "dataset/mega/demo"
+    assert cache._repo_cache_id_from_target("mega://mcps/mega/demo") == "mcp/mega/demo"
     assert cache._repo_cache_id_from_target("mega://mega/demo") == "model/mega/demo"
 
     try:
@@ -46,6 +47,8 @@ def test_cache_verify_uses_worker_file_checksums(tmp_path, monkeypatch):
             str(tmp_path),
             "--token",
             "mega-token",
+            "--format",
+            "human",
         ],
     )
 

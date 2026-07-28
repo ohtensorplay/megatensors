@@ -26,6 +26,9 @@ def test_parse_mega_uri_requires_a_repository_file_and_uses_mega_protocol():
     assert uri.repo_type == "dataset"
     assert uri.revision == "release/2026"
     assert uri.path == "train/part-0.jsonl"
+    mcp = _cp.parse_mega_uri("mega://mcps/mega/xpuoj@main/README.md")
+    assert mcp.repo_type == "mcp"
+    assert mcp.to_uri() == "mega://mcps/mega/xpuoj@main/README.md"
     assert uri.to_uri() == "mega://datasets/mega/data@release%2F2026/train/part-0.jsonl"
 
     root = _cp.parse_mega_uri("mega://models/mega/demo/")
@@ -62,6 +65,8 @@ def test_cp_remote_to_remote_calls_the_worker_copy_operation(monkeypatch):
             "mega://spaces/mega/demo@main/assets/model.mega",
             "--token",
             "secret",
+            "--format",
+            "human",
         ],
     )
 

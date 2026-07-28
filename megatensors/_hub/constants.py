@@ -140,13 +140,13 @@ SPACES_SDK_TYPES = ["gradio", "streamlit", "docker", "static"]
 REPO_TYPES_URL_PREFIXES = {
     REPO_TYPE_DATASET: "datasets/",
     REPO_TYPE_SPACE: "spaces/",
-    REPO_TYPE_MCP: "mcp/",
+    REPO_TYPE_MCP: "mcps/",
     REPO_TYPE_KERNEL: "kernels/",
 }
 REPO_TYPES_MAPPING = {
     "datasets": REPO_TYPE_DATASET,
     "spaces": REPO_TYPE_SPACE,
-    "mcp": REPO_TYPE_MCP,
+    "mcps": REPO_TYPE_MCP,
     "models": REPO_TYPE_MODEL,
     "kernels": REPO_TYPE_KERNEL,
 }
@@ -159,7 +159,7 @@ MEGA_URI_TYPE_PREFIXES: dict[str, MegaUriType] = {
     "models": "model",
     "datasets": "dataset",
     "spaces": "space",
-    "mcp": "mcp",
+    "mcps": "mcp",
     "kernels": "kernel",
     "buckets": "bucket",
 }

@@ -65,7 +65,7 @@ def test_download_supports_mcp_companion_repository(monkeypatch):
         "megatensors._hub.cli.download.snapshot_download", fake_snapshot_download
     )
 
-    download("mega://mcp/mega/xpuoj", local_dir="/tmp/xpuoj")
+    download("mega://mcps/mega/xpuoj", local_dir="/tmp/xpuoj")
 
     assert calls[0]["repo_id"] == "mega/xpuoj"
     assert calls[0]["repo_type"] == "mcp"

@@ -75,7 +75,7 @@ def _parse_mega_uri(value: str):
     except MegaUriError as error:
         raise CLIError(
             "Invalid MEGA repository URI. Expected "
-            "`mega://[models|datasets|spaces|mcp]/namespace/repository[@revision][/path]`."
+            "`mega://[models|datasets|spaces|mcps]/namespace/repository[@revision][/path]`."
         ) from error
     if uri.is_bucket or uri.type not in _MEGA_REPO_TYPES:
         raise CLIError(

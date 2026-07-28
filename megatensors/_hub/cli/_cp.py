@@ -27,7 +27,14 @@ from ._output import out
 
 
 MEGA_PROTOCOL = "mega://"
-_TYPE_PREFIXES = {"models": "model", "datasets": "dataset", "spaces": "space", "buckets": "bucket", "bucket": "bucket"}
+_TYPE_PREFIXES = {
+    "models": "model",
+    "datasets": "dataset",
+    "spaces": "space",
+    "mcps": "mcp",
+    "buckets": "bucket",
+    "bucket": "bucket",
+}
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
@@ -49,7 +56,7 @@ class MegaUri:
     """A MEGA repository location parsed from a ``mega://`` URI."""
 
     repo_id: str
-    repo_type: Literal["model", "dataset", "space", "bucket"]
+    repo_type: Literal["model", "dataset", "space", "mcp", "bucket"]
     revision: str | None
     path: str = ""
     trailing_slash: bool = False
@@ -58,7 +65,7 @@ class MegaUri:
         if self.repo_type == "bucket":
             result = f"{MEGA_PROTOCOL}buckets/{self.repo_id}"
         else:
-            prefix = {"model": "models", "dataset": "datasets", "space": "spaces"}[self.repo_type]
+            prefix = {"model": "models", "dataset": "datasets", "space": "spaces", "mcp": "mcps"}[self.repo_type]
             revision = quote(self.revision or "main", safe="")
             result = f"{MEGA_PROTOCOL}{prefix}/{self.repo_id}@{revision}"
         if self.path:
@@ -309,7 +316,7 @@ def _require_file_source(source: MegaUri) -> None:
 def _invalid_uri(value: str) -> CLIError:
     return CLIError(
         "Invalid MEGA Hub URI. Expected a repository URI "
-        "`mega://[models|datasets|spaces]/namespace/repository[@revision][/path]` or Bucket URI "
+        "`mega://[models|datasets|spaces|mcps]/namespace/repository[@revision][/path]` or Bucket URI "
         "`mega://buckets/namespace/bucket[/path]`: "
         f"{value!r}."
     )

@@ -30,7 +30,7 @@ from ._terminal import tabulate
 
 logger = logging.get_logger(__name__)
 
-REPO_TYPE_T = Literal["model", "dataset", "space"]
+REPO_TYPE_T = Literal["model", "dataset", "space", "mcp"]
 
 # List of OS-created helper files that need to be ignored
 FILES_TO_IGNORE = [".DS_Store", "Thumbs.db", "desktop.ini"]

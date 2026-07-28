@@ -176,7 +176,7 @@ REPO_API_REGEX = re.compile(
         ^https://[^/]+
         (
             # on /api/repo_type/repo_id
-            /api/(models|datasets|spaces)/(.+)
+            /api/(models|datasets|spaces|mcps)/(.+)
             |
             # or /repo_id/resolve/revision/...
             /(.+)/resolve/(.+)
@@ -200,8 +200,8 @@ BUCKET_API_REGEX = re.compile(
 _JOB_ID_FROM_URL_REGEX = re.compile(r"^https?://[^/]+/api/(?:scheduled-jobs|jobs)/[^/]+/([^/?]+)")
 
 # Regex to extract repo_type and repo_id from API URLs.
-# Captures: group(1) = repo_type plural (models/datasets/spaces), group(2) = first path segment, group(3) = optional second segment.
-_REPO_ID_FROM_URL_REGEX = re.compile(r"^https?://[^/]+/api/(models|datasets|spaces)/([^/]+)(?:/([^/]+))?")
+# Captures: group(1) = repo type (models/datasets/spaces/mcps), group(2) = first path segment, group(3) = optional second segment.
+_REPO_ID_FROM_URL_REGEX = re.compile(r"^https?://[^/]+/api/(models|datasets|spaces|mcps)/([^/]+)(?:/([^/]+))?")
 
 # Regex to extract bucket_id (namespace/name) from bucket API URLs.
 _BUCKET_ID_FROM_URL_REGEX = re.compile(r"^https?://[^/]+/api/buckets/([^/]+/[^/]+)")
@@ -213,7 +213,7 @@ _REPO_URL_SUBPATHS = {"resolve", "tree", "blob", "raw", "refs", "commit", "discu
 def _parse_repo_info_from_url(url: str) -> tuple[str | None, str | None]:
     """Extract (repo_type, repo_id) from an API URL.
 
-    Returns canonical repo_type values: "model", "dataset", "space" (or None).
+    Returns canonical repo_type values: "model", "dataset", "space", "mcp" (or None).
 
     Examples:
         >>> _parse_repo_info_from_url("https://mega.tensorplay.cn/api/models/user/repo")
@@ -222,6 +222,8 @@ def _parse_repo_info_from_url(url: str) -> tuple[str | None, str | None]:
         ("dataset", "user/repo")
         >>> _parse_repo_info_from_url("https://mega.tensorplay.cn/api/models/bert-base-cased/resolve/main/config.json")
         ("model", "bert-base-cased")
+        >>> _parse_repo_info_from_url("https://mega.tensorplay.cn/api/mcps/mega/xpuoj")
+        ("mcp", "mega/xpuoj")
     """
     match = _REPO_ID_FROM_URL_REGEX.search(url)
     if not match:

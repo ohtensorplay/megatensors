@@ -371,7 +371,7 @@ def test_hub_api_reads_mcp_marketplace_contract():
         "tags": ["xpuoj", "judge"],
         "price_per_call": 1,
         "status": "published",
-        "url": "https://mega.tensorplay.cn/mcp/mega/xpuoj",
+        "url": "https://mega.tensorplay.cn/mcps/mega/xpuoj",
         "endpoint": "https://mega.tensorplay.cn/mcp",
         "owner": {"handle": "mega", "display_name": "MEGA"},
         "runtime": {
@@ -390,7 +390,7 @@ def test_hub_api_reads_mcp_marketplace_contract():
     class RecordingApi(MegaHubClient):
         def _request_json(self, method, path, **kwargs):  # type: ignore[override]
             calls.append((method, path, kwargs))
-            if path.startswith("/api/mcp/marketplace?"):
+            if path.startswith("/api/mcps/marketplace?"):
                 return {"listings": [listing]}
             return listing
 
@@ -406,10 +406,10 @@ def test_hub_api_reads_mcp_marketplace_contract():
     assert calls == [
         (
             "GET",
-            "/api/mcp/marketplace?q=online+judge&category=developer-tools",
+            "/api/mcps/marketplace?q=online+judge&category=developer-tools",
             {},
         ),
-        ("GET", "/api/mcp/marketplace/mega/xpuoj", {}),
+        ("GET", "/api/mcps/marketplace/mega/xpuoj", {}),
     ]
 
 
@@ -506,12 +506,12 @@ def test_cli_repo_create_passes_metadata(monkeypatch):
             "create",
             "mega/demo",
             "--repo-type",
-            "dataset",
+            "mcp",
             "--private",
             "--description",
-            "Demo dataset",
+            "Demo MCP",
             "--tag",
-            "vision",
+            "tools",
             "--license",
             "apache-2.0",
                 "--exist-ok",
@@ -525,10 +525,10 @@ def test_cli_repo_create_passes_metadata(monkeypatch):
         "create_repo",
         "mega/demo",
         {
-            "repo_type": "dataset",
+            "repo_type": "mcp",
             "private": True,
-            "description": "Demo dataset",
-            "tags": ["vision"],
+            "description": "Demo MCP",
+            "tags": ["tools"],
             "license": "apache-2.0",
             "exist_ok": True,
         },

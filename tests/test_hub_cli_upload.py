@@ -24,7 +24,7 @@ def test_upload_forwards_mega_native_options(tmp_path, monkeypatch):
         "mega/demo",
         source,
         "checkpoint",
-        repo_type=RepoType.dataset,
+        repo_type=RepoType.mcp,
         revision="release",
         private=True,
         commit_message="publish dataset",
@@ -41,7 +41,7 @@ def test_upload_forwards_mega_native_options(tmp_path, monkeypatch):
             {
                 "local_path": source,
                 "path_in_repo": "checkpoint",
-                "repo_type": "dataset",
+                "repo_type": "mcp",
                 "revision": "release",
                 "private": True,
                 "commit_message": "publish dataset",

@@ -166,11 +166,11 @@ def _repo_cache_id_from_target(target: str) -> str:
     parts = location.split("/")
     if len(parts) == 2:
         return f"model/{location}"
-    if len(parts) == 3 and parts[0] in {"models", "datasets", "spaces"}:
+    if len(parts) == 3 and parts[0] in {"models", "datasets", "spaces", "mcps"}:
         return f"{parts[0][:-1]}/{parts[1]}/{parts[2]}"
     raise CLIError(
         "Invalid MEGA repository URI. Expected `mega://namespace/repository` or "
-        "`mega://[models|datasets|spaces]/namespace/repository`."
+        "`mega://[models|datasets|spaces|mcps]/namespace/repository`."
     )
 
 

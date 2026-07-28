@@ -591,7 +591,7 @@ class MegaHubClient(JobsClientMixin):
         if category:
             query["category"] = category
         suffix = f"?{urllib.parse.urlencode(query)}" if query else ""
-        data = self._request_json("GET", f"/api/mcp/marketplace{suffix}")
+        data = self._request_json("GET", f"/api/mcps/marketplace{suffix}")
         raw_listings = data.get("listings", [])
         if not isinstance(raw_listings, list):
             raise MegaHubError("expected MCP marketplace listings")
@@ -604,7 +604,7 @@ class MegaHubClient(JobsClientMixin):
     def get_mcp_marketplace(self, repo_id: str) -> McpMarketplaceInfo:
         """Get one published MCP marketplace entry."""
         data = self._request_json(
-            "GET", f"/api/mcp/marketplace/{_quote_repo_id(repo_id)}"
+            "GET", f"/api/mcps/marketplace/{_quote_repo_id(repo_id)}"
         )
         return _mcp_marketplace_info(data)
 
@@ -1940,8 +1940,8 @@ def _validate_discussion_number(number: int) -> None:
 
 
 def _validate_repo_type(repo_type: str) -> None:
-    if repo_type not in {"model", "dataset", "space"}:
-        raise ValueError("repo_type must be 'model', 'dataset', or 'space'")
+    if repo_type not in {"model", "dataset", "space", "mcp"}:
+        raise ValueError("repo_type must be 'model', 'dataset', 'space', or 'mcp'")
 
 
 def _repo_info(data: Mapping[str, Any]) -> RepoInfo:

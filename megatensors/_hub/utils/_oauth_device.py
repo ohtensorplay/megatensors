@@ -43,6 +43,7 @@ _CLI_OAUTH_SCOPES = (
     "community:write",
     "jobs:run",
     "inference:run",
+    "mcp:use",
     "account:keys",
     "webhooks:manage",
     "openid",

@@ -52,7 +52,7 @@ class DeviceOAuthTests(TestCase):
         })])
         self.assertEqual(set(_oauth_device._CLI_OAUTH_SCOPES), {
             "repo:read", "repo:write", "repo:delete", "community:write", "jobs:run",
-            "inference:run", "account:keys", "webhooks:manage", "openid", "profile",
+            "inference:run", "mcp:use", "account:keys", "webhooks:manage", "openid", "profile",
             "offline_access",
         })
         self.assertEqual(info["interval"], 5)

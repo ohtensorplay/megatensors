@@ -23,7 +23,8 @@ import time
 from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypedDict
+from urllib.parse import quote
 
 import click
 from packaging.version import InvalidVersion, Version
@@ -657,6 +658,18 @@ RevisionOpt = Annotated[
 ### PyPI VERSION CHECKER
 
 
+class CliReleaseInfo(TypedDict):
+    highlights: list[str]
+
+
+_PYPI_PROJECT_URL = "https://pypi.org/pypi/megatensors/json"
+_GITHUB_RELEASE_API_URL = (
+    "https://api.github.com/repos/ohtensorplay/megatensors/releases/tags"
+)
+_MAX_RELEASE_HIGHLIGHTS = 3
+_MAX_RELEASE_HIGHLIGHT_LENGTH = 180
+
+
 def check_cli_update(library: Literal["megatensors", "huggingface_hub", "transformers"] = "megatensors") -> None:
     """Check whether a newer MEGA CLI release is available on PyPI.
 
@@ -665,7 +678,7 @@ def check_cli_update(library: Literal["megatensors", "huggingface_hub", "transfo
     If current version is a pre-release (e.g. `1.0.0.rc1`), or a dev version (e.g. `1.0.0.dev1`), no check is performed.
     If `MEGA_HUB_DISABLE_UPDATE_CHECK` is set, the check is skipped entirely.
 
-    This function is called at the entry point of the CLI. It only performs the check once every 24 hours, and any error
+    This function is called at the entry point of the CLI. A successful check is cached for one hour, and any error
     during the check is caught and logged, to avoid breaking the CLI.
 
     ``huggingface_hub`` is accepted as a source-compatible spelling and maps to
@@ -695,40 +708,126 @@ def _check_cli_update() -> None:
     if parsed_current.is_prerelease or parsed_current.is_devrelease:
         return
 
-    # Skip if already checked in the last 24 hours
+    # Skip if a complete update lookup succeeded in the current refresh window.
     if os.path.exists(constants.CHECK_FOR_UPDATE_DONE_PATH):
         mtime = os.path.getmtime(constants.CHECK_FOR_UPDATE_DONE_PATH)
-        if (time.time() - mtime) < 24 * 3600:
+        if (time.time() - mtime) < constants.CHECK_FOR_UPDATE_INTERVAL_SECONDS:
             return
-
-    # Touch the file to mark that we did the check now
-    Path(constants.CHECK_FOR_UPDATE_DONE_PATH).parent.mkdir(parents=True, exist_ok=True)
-    Path(constants.CHECK_FOR_UPDATE_DONE_PATH).touch()
 
     latest_version = _fetch_latest_pypi_version()
     if latest_version is None:
         return
     try:
         if Version(latest_version) <= parsed_current:
+            _mark_cli_update_check_completed()
             return
     except InvalidVersion:
         return
 
-    message = f"MEGA CLI {latest_version} is available (current: {current_version})."
-    if _get_mega_update_command() is not None:
-        message += "\nRun `mega update` to upgrade."
-    out.hint(message)
+    release_info = _fetch_cli_release_info(latest_version)
+    if release_info is None or not release_info["highlights"]:
+        return
+    _mark_cli_update_check_completed()
+    out.hint(
+        _format_cli_update_message(
+            current_version,
+            latest_version,
+            release_info,
+            include_update_command=_get_mega_update_command() is not None,
+        )
+    )
+
+
+def _mark_cli_update_check_completed() -> None:
+    """Persist a successful update check without affecting CLI execution."""
+    try:
+        Path(constants.CHECK_FOR_UPDATE_DONE_PATH).parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        Path(constants.CHECK_FOR_UPDATE_DONE_PATH).touch()
+    except OSError:
+        logger.debug("Could not persist the CLI update-check timestamp.", exc_info=True)
 
 
 def _fetch_latest_pypi_version() -> str | None:
     """Fetch the latest MEGA CLI version from PyPI."""
     try:
-        response = get_session().get("https://pypi.org/pypi/megatensors/json", timeout=2)
+        response = get_session().get(_PYPI_PROJECT_URL, timeout=2)
         mega_raise_for_status(response)
         return response.json()["info"]["version"]
     except Exception:
         logger.debug("Error while fetching latest version from PyPI.", exc_info=True)
         return None
+
+
+def _fetch_cli_release_info(version: str) -> CliReleaseInfo | None:
+    """Fetch user-facing highlights for a published MEGA CLI release."""
+    try:
+        tag = f"v{version}"
+        response = get_session().get(
+            f"{_GITHUB_RELEASE_API_URL}/{quote(tag, safe='')}",
+            timeout=2,
+        )
+        mega_raise_for_status(response)
+        payload = response.json()
+        if payload.get("tag_name") != tag:
+            return None
+        body = payload.get("body")
+        highlights = _extract_release_highlights(body) if isinstance(body, str) else []
+        return {"highlights": highlights}
+    except Exception:
+        logger.debug(
+            "Error while fetching MEGA CLI release information.", exc_info=True
+        )
+        return None
+
+
+def _extract_release_highlights(body: str) -> list[str]:
+    """Extract short, terminal-safe bullets from a release's Highlights section."""
+    highlights: list[str] = []
+    in_highlights = False
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if line.casefold() == "## highlights":
+            in_highlights = True
+            continue
+        if in_highlights and line.startswith("## "):
+            break
+        if not in_highlights or not line.startswith(("- ", "* ")):
+            continue
+
+        highlight = line[2:].strip()
+        highlight = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", highlight)
+        highlight = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", highlight)
+        highlight = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", highlight)
+        highlight = re.sub(r"\s+", " ", highlight)
+        if not highlight:
+            continue
+        if len(highlight) > _MAX_RELEASE_HIGHLIGHT_LENGTH:
+            highlight = highlight[: _MAX_RELEASE_HIGHLIGHT_LENGTH - 1].rstrip() + "…"
+        highlights.append(highlight)
+        if len(highlights) == _MAX_RELEASE_HIGHLIGHTS:
+            break
+    return highlights
+
+
+def _format_cli_update_message(
+    current_version: str,
+    latest_version: str,
+    release_info: CliReleaseInfo | None,
+    *,
+    include_update_command: bool,
+) -> str:
+    """Format a concise update notice for startup checks and `mega update`."""
+    lines = [f"MEGA CLI {latest_version} is available (current: {current_version})."]
+    if release_info is not None:
+        highlights = release_info["highlights"]
+        if highlights:
+            lines.append("Highlights:")
+            lines.extend(f"- {highlight}" for highlight in highlights)
+    if include_update_command:
+        lines.append("Run `mega update` to upgrade.")
+    return "\n".join(lines)
 
 
 def run_update() -> int:

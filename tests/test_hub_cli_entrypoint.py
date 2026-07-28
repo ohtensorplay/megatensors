@@ -1,10 +1,13 @@
+import os
+import time
+
 import click
 import httpx
 import pytest
 from click.testing import CliRunner
 
-from megatensors._hub.cli import mega
 from megatensors._hub.cli import _cli_utils
+from megatensors._hub.cli import mega
 from megatensors._hub.cli._output import _MEGA_ASCII
 from megatensors._hub.errors import DeviceCodeError
 
@@ -111,6 +114,16 @@ def test_update_check_targets_megatensors_and_writes_hint_to_stderr(
     )
     monkeypatch.setattr(_cli_utils, "_fetch_latest_pypi_version", lambda: "1.1.0")
     monkeypatch.setattr(
+        _cli_utils,
+        "_fetch_cli_release_info",
+        lambda version: {
+            "highlights": [
+                "Checks for new releases every hour.",
+                "Shows release highlights in the terminal.",
+            ],
+        },
+    )
+    monkeypatch.setattr(
         _cli_utils, "_get_mega_update_command", lambda: ["mega", "update"]
     )
     previous_mode = _cli_utils.out.mode
@@ -125,6 +138,9 @@ def test_update_check_targets_megatensors_and_writes_hint_to_stderr(
     assert captured.out == ""
     assert captured.err == (
         "Hint: MEGA CLI 1.1.0 is available (current: 1.0.0).\n"
+        "Highlights:\n"
+        "- Checks for new releases every hour.\n"
+        "- Shows release highlights in the terminal.\n"
         "Run `mega update` to upgrade.\n"
     )
     assert (tmp_path / "checked").exists()
@@ -149,11 +165,147 @@ def test_update_check_never_suggests_a_downgrade(monkeypatch, tmp_path):
         _cli_utils.importlib.metadata, "version", lambda package: "2.0.0"
     )
     monkeypatch.setattr(_cli_utils, "_fetch_latest_pypi_version", lambda: "1.9.0")
+    monkeypatch.setattr(
+        _cli_utils,
+        "_fetch_cli_release_info",
+        lambda version: pytest.fail("release details are not needed for a downgrade"),
+    )
     monkeypatch.setattr(_cli_utils.out, "hint", hints.append)
 
     _cli_utils._check_cli_update()
 
     assert hints == []
+
+
+def test_update_check_refreshes_after_one_hour(monkeypatch, tmp_path):
+    checked = tmp_path / "checked"
+    checked.touch()
+    two_hours_ago = time.time() - 2 * 60 * 60
+    os.utime(checked, (two_hours_ago, two_hours_ago))
+    hints: list[str] = []
+    monkeypatch.setattr(_cli_utils.constants, "MEGA_HUB_DISABLE_UPDATE_CHECK", False)
+    monkeypatch.setattr(
+        _cli_utils.constants, "CHECK_FOR_UPDATE_DONE_PATH", str(checked)
+    )
+    monkeypatch.setattr(
+        _cli_utils.importlib.metadata, "version", lambda package: "1.0.0"
+    )
+    monkeypatch.setattr(_cli_utils, "_fetch_latest_pypi_version", lambda: "1.1.0")
+    monkeypatch.setattr(
+        _cli_utils,
+        "_fetch_cli_release_info",
+        lambda version: {
+            "highlights": ["Refreshes update checks every hour."],
+        },
+    )
+    monkeypatch.setattr(
+        _cli_utils, "_get_mega_update_command", lambda: ["mega", "update"]
+    )
+    monkeypatch.setattr(_cli_utils.out, "hint", hints.append)
+
+    _cli_utils._check_cli_update()
+
+    assert hints == [
+        "MEGA CLI 1.1.0 is available (current: 1.0.0).\n"
+        "Highlights:\n"
+        "- Refreshes update checks every hour.\n"
+        "Run `mega update` to upgrade."
+    ]
+    assert time.time() - checked.stat().st_mtime < 5
+
+
+def test_update_check_does_not_cache_failed_lookup(monkeypatch, tmp_path):
+    checked = tmp_path / "checked"
+    monkeypatch.setattr(_cli_utils.constants, "MEGA_HUB_DISABLE_UPDATE_CHECK", False)
+    monkeypatch.setattr(
+        _cli_utils.constants, "CHECK_FOR_UPDATE_DONE_PATH", str(checked)
+    )
+    monkeypatch.setattr(
+        _cli_utils.importlib.metadata, "version", lambda package: "1.0.0"
+    )
+    monkeypatch.setattr(_cli_utils, "_fetch_latest_pypi_version", lambda: None)
+
+    _cli_utils._check_cli_update()
+
+    assert not checked.exists()
+
+
+def test_update_check_retries_until_release_highlights_exist(monkeypatch, tmp_path):
+    checked = tmp_path / "checked"
+    hints: list[str] = []
+    monkeypatch.setattr(_cli_utils.constants, "MEGA_HUB_DISABLE_UPDATE_CHECK", False)
+    monkeypatch.setattr(
+        _cli_utils.constants, "CHECK_FOR_UPDATE_DONE_PATH", str(checked)
+    )
+    monkeypatch.setattr(
+        _cli_utils.importlib.metadata, "version", lambda package: "1.0.0"
+    )
+    monkeypatch.setattr(_cli_utils, "_fetch_latest_pypi_version", lambda: "1.1.0")
+    monkeypatch.setattr(_cli_utils, "_fetch_cli_release_info", lambda version: None)
+    monkeypatch.setattr(_cli_utils.out, "hint", hints.append)
+
+    _cli_utils._check_cli_update()
+
+    assert hints == []
+    assert not checked.exists()
+
+
+def test_release_highlights_are_bounded_and_terminal_safe():
+    highlights = _cli_utils._extract_release_highlights("""
+## Highlights
+
+- Adds [MCP repositories](https://mega.tensorplay.cn/docs/mcp).
+- Removes a \x1b[31mcontrol sequence.
+- Third useful item.
+- Fourth item is not displayed.
+
+## Upgrade
+
+Run `mega update`.
+""")
+
+    assert highlights == [
+        "Adds MCP repositories.",
+        "Removes a control sequence.",
+        "Third useful item.",
+    ]
+
+
+def test_update_command_never_downgrades(monkeypatch, capsys):
+    monkeypatch.setattr(mega, "__version__", "2.0.0")
+    monkeypatch.setattr(mega, "_fetch_latest_pypi_version", lambda: "1.9.0")
+    monkeypatch.setattr(
+        mega,
+        "run_update",
+        lambda: pytest.fail("the updater must not install an older release"),
+    )
+
+    mega.update()
+
+    assert "mega is up to date (2.0.0)" in capsys.readouterr().out
+
+
+def test_update_command_displays_release_information(monkeypatch, capsys):
+    monkeypatch.setattr(mega, "__version__", "1.0.0")
+    monkeypatch.setattr(mega, "_fetch_latest_pypi_version", lambda: "1.1.0")
+    monkeypatch.setattr(
+        mega,
+        "_fetch_cli_release_info",
+        lambda version: {
+            "highlights": ["Shows release highlights before upgrading."],
+        },
+    )
+    monkeypatch.setattr(mega, "run_update", lambda: 0)
+
+    mega.update()
+
+    assert capsys.readouterr().out == (
+        "Current version: 1.0.0\n"
+        "Checking for updates...\n"
+        "MEGA CLI 1.1.0 is available (current: 1.0.0).\n"
+        "Highlights:\n"
+        "- Shows release highlights before upgrading.\n"
+    )
 
 
 def test_quiet_mode_is_detected_before_update_check():

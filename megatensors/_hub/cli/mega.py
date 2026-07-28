@@ -6,12 +6,15 @@ import traceback
 from typing import Annotated
 
 import click
+from packaging.version import InvalidVersion, Version
 
 from megatensors import __version__
 from megatensors._hub.cli._framework import build_command as build_artifact_command
 from megatensors._hub import constants
 from megatensors._hub.cli._cli_utils import (
+    _fetch_cli_release_info,
     _fetch_latest_pypi_version,
+    _format_cli_update_message,
     check_cli_update,
     run_update,
     typer_factory,
@@ -68,9 +71,23 @@ def update() -> None:
     out.text(f"Current version: {__version__}")
     out.text("Checking for updates...")
     latest_version = _fetch_latest_pypi_version()
-    if latest_version is not None and __version__ == latest_version:
-        out.text(f"mega is up to date ({__version__})")
-        return
+    if latest_version is not None:
+        try:
+            if Version(latest_version) <= Version(__version__):
+                out.text(f"mega is up to date ({__version__})")
+                return
+        except InvalidVersion:
+            if __version__ == latest_version:
+                out.text(f"mega is up to date ({__version__})")
+                return
+        out.text(
+            _format_cli_update_message(
+                __version__,
+                latest_version,
+                _fetch_cli_release_info(latest_version),
+                include_update_command=False,
+            )
+        )
     returncode = run_update()
     if returncode != 0:
         raise click.exceptions.Exit(code=returncode)

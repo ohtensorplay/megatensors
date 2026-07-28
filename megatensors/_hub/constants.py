@@ -220,9 +220,9 @@ def is_offline_mode() -> bool:
     return MEGA_HUB_OFFLINE
 
 
-# File created to mark that the version check has been done.
-# Check is performed once per 24 hours at most.
+# File created to mark that the version check has completed successfully.
 CHECK_FOR_UPDATE_DONE_PATH = os.path.join(MEGA_HOME, ".check_for_update_done")
+CHECK_FOR_UPDATE_INTERVAL_SECONDS = 60 * 60
 
 # File caching the AI agent harnesses registry fetched from `{ENDPOINT}/api/agent-harnesses`.
 # Refreshed once per 24 hours at most (see `utils/_detect_agent.py`).

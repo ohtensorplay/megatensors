@@ -69,6 +69,27 @@ jobs:
             exit 1
           fi
 
+      - name: Validate authored release notes
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.package.outputs.tag }}
+        run: |
+          release_notes=".github/releases/${RELEASE_TAG}.md"
+          if [[ ! -f "$release_notes" ]]; then
+            echo "Missing authored release notes: $release_notes" >&2
+            exit 1
+          fi
+          for heading in "## Highlights" "## Upgrade" "## Compatibility"; do
+            if ! grep -Fxq "$heading" "$release_notes"; then
+              echo "$release_notes is missing required heading: $heading" >&2
+              exit 1
+            fi
+          done
+          if grep -Eiq '\b(TBD|TODO|PLACEHOLDER)\b' "$release_notes"; then
+            echo "$release_notes still contains placeholder copy" >&2
+            exit 1
+          fi
+
   plan:
     name: Plan missing artifacts
     needs: validate
@@ -343,6 +364,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check out release notes
+        uses: actions/checkout@v7.0.0
+        with:
+          sparse-checkout: .github/releases
+          ref: ${{ needs.validate.outputs.tag }}
+
       - name: Download verified release artifacts
         uses: actions/download-artifact@v8.0.1
         with:
@@ -356,7 +383,9 @@ jobs:
           IS_PRERELEASE: ${{ needs.validate.outputs.prerelease }}
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
         run: |
-          release_args=(--verify-tag --generate-notes --title "$RELEASE_TAG")
+          release_notes=".github/releases/${RELEASE_TAG}.md"
+          release_title="MEGA CLI ${RELEASE_TAG#v}"
+          release_args=(--verify-tag --notes-file "$release_notes" --title "$release_title")
           if [[ "$IS_PRERELEASE" == "true" ]]; then
             release_args+=(--prerelease)
           fi
@@ -371,7 +400,7 @@ jobs:
                 gh release upload "$RELEASE_TAG" "$file" --repo "$GITHUB_REPOSITORY"
               fi
             done
-            edit_args=(--draft=false --title "$RELEASE_TAG")
+            edit_args=(--draft=false --notes-file "$release_notes" --title "$release_title")
             if [[ "$IS_PRERELEASE" == "true" ]]; then
               edit_args+=(--prerelease)
             else

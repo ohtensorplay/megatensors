@@ -25,6 +25,12 @@ def test_worker_resolve_url_supports_mcp_repository_files():
     )
 
 
+def test_worker_resolve_url_keeps_dotfiles_out_of_the_path():
+    assert mega_hub_url("mega/demo", ".gitattributes", repo_type="dataset") == (
+        "https://mega.tensorplay.cn/api/repos/mega/demo/resolve?revision=main&path=.gitattributes"
+    )
+
+
 def test_download_uses_mega_uri_and_worker_repo_id(monkeypatch):
     calls = []
 

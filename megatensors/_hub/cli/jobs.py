@@ -23,7 +23,7 @@ from .job_uv import uv_cli
 from .jobs_support import job_environment_entries, job_record, job_volume_entries, key_value_entries, worker_errors_as_cli_errors
 
 
-jobs_cli = typer_factory(help="Run bounded CPU Jobs on the protected MEGA VPS runner.")
+jobs_cli = typer_factory(help="Run bounded CPU Jobs on MEGA managed compute.")
 jobs_cli.add_group(schedules_cli, name="scheduled")
 jobs_cli.add_group(uv_cli, name="uv")
 

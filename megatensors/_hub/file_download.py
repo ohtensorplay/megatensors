@@ -10,7 +10,7 @@ import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Literal, NoReturn, overload
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 import httpx
 from tqdm.auto import tqdm as base_tqdm
@@ -279,9 +279,15 @@ def mega_hub_url(
 
     if revision is None:
         revision = constants.DEFAULT_REVISION
-    url = constants.MEGA_URL_TEMPLATE.format(
-        repo_id=repo_id, revision=quote(revision, safe=""), filename=quote(filename)
-    )
+    if any(part.startswith(".") for part in filename.split("/")):
+        url = (
+            f"{constants.ENDPOINT}/api/repos/{repo_id}/resolve?"
+            f"{urlencode({'revision': revision, 'path': filename})}"
+        )
+    else:
+        url = constants.MEGA_URL_TEMPLATE.format(
+            repo_id=repo_id, revision=quote(revision, safe=""), filename=quote(filename)
+        )
     # Update endpoint if provided
     if endpoint is not None and url.startswith(constants.ENDPOINT):
         url = endpoint + url[len(constants.ENDPOINT) :]

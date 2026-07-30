@@ -167,7 +167,8 @@ _OIDC_REFRESH_MARGIN = 300  # re-exchange this many seconds before the token act
 def _get_token_from_oidc() -> str | None:
     """Get a short-lived OIDC token in CI (Trusted Publishers).
 
-    Enabled by setting `MEGA_OIDC_RESOURCE`, which scopes the token to a repo or user.
+    Enabled by setting `MEGA_OIDC_RESOURCE` to the target namespace handle, which scopes the
+    token to repository and Bucket publishing under that namespace.
     The ID token is read from `MEGA_OIDC_ID_TOKEN` if available, or minted from a supported CI provider (e.g. GitHub Actions).
 
     Returns `None` when OIDC is not enabled.

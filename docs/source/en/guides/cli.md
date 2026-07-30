@@ -44,6 +44,35 @@ Read/Write/Full preference. `mega auth whoami` shows the active token kind,
 role, and granted scopes so scripts can fail before attempting an unauthorized
 operation.
 
+### Trusted Publishers in GitHub Actions
+
+Organization and personal namespace owners can register a GitHub Actions
+Trusted Publisher. The workflow then exchanges GitHub's signed OIDC identity
+for a one-hour MEGA token; no long-lived `MEGA_TOKEN` secret is stored.
+
+Set `MEGA_OIDC_RESOURCE` to the namespace handle, not a repository or Bucket
+ID. The same short-lived identity can publish repository revisions and mutable
+Bucket objects inside that namespace:
+
+```yaml
+permissions:
+  contents: read
+  id-token: write
+
+steps:
+  - uses: actions/checkout@v4
+  - run: python -m pip install megatensors
+  - run: |
+      mega buckets create model-team/release-artifacts --private --exist-ok
+      mega buckets sync ./artifacts mega://buckets/model-team/release-artifacts
+    env:
+      MEGA_OIDC_RESOURCE: model-team
+```
+
+Trusted Publisher tokens have repository/Bucket read and publish access only.
+They cannot delete or move a Bucket, change its visibility, issue persistent S3
+credentials, manage the account, or obtain a refresh token.
+
 ## Command domains
 
 | Domain | Commands | Purpose |

@@ -1673,8 +1673,12 @@ class MegaHubClient(JobsClientMixin):
         if out.exists() and not force:
             return out
         out.parent.mkdir(parents=True, exist_ok=True)
-        query = urllib.parse.urlencode({"revision": revision})
-        url_path = f"/api/repos/{_quote_repo_id(repo_id)}/resolve/{_quote_path(remote_path)}?{query}"
+        if any(part.startswith(".") for part in remote_path.split("/")):
+            query = urllib.parse.urlencode({"revision": revision, "path": remote_path})
+            url_path = f"/api/repos/{_quote_repo_id(repo_id)}/resolve?{query}"
+        else:
+            query = urllib.parse.urlencode({"revision": revision})
+            url_path = f"/api/repos/{_quote_repo_id(repo_id)}/resolve/{_quote_path(remote_path)}?{query}"
         body = self._request_bytes("GET", url_path)
         tmp = out.with_name(f".{out.name}.tmp")
         tmp.write_bytes(body)

@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from megatensors.hub import MegaHubClient
+from megatensors._jobs_client import _iter_sse_data
 from megatensors._hub._space_api import Volume
 
 
@@ -170,3 +171,16 @@ def test_native_jobs_client_keeps_single_status_and_command_as_single_values():
     assert calls == [("GET", "/api/jobs?limit=30&status=RUNNING")]
     with pytest.raises(ValueError, match="not one string"):
         client.run_job(image="python:3.12-slim", command="python -V")
+
+
+def test_native_jobs_stream_keeps_cursor_events_internal():
+    stream = [
+        b"event: log\n",
+        b'data: {"message":"hello"}\n',
+        b"\n",
+        b"event: cursor\n",
+        b'data: {"nextPageToken":"opaque"}\n',
+        b"\n",
+    ]
+
+    assert list(_iter_sse_data(stream)) == ['{"message":"hello"}']

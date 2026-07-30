@@ -288,7 +288,7 @@ def pool_create(
 ) -> None:
     """Create and warm a sandbox pool."""
     if per_host != NATIVE_SANDBOXES_PER_BROKER:
-        raise CLIError("--per-host is fixed at 4 for the native Cloud Run Sandbox broker.")
+        raise CLIError("--per-host is fixed at 4 for the managed Sandbox runtime.")
     if max_hosts not in (None, 1):
         raise CLIError("--max-hosts is fixed at 1 until native pools support multi-broker scaling.")
     start = time.time()

@@ -345,11 +345,21 @@ def _stream_sse(client: Any, path: str, *, timeout: float) -> Iterator[str]:
             except Exception:
                 pass
             raise MegaHubError(f"{response.status} {message}", status_code=response.status, method="GET", url=client.endpoint + path)
-        while raw := response.readline():
-            line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
-            if line.startswith("data:"):
-                yield line[5:].lstrip()
+        yield from _iter_sse_data(iter(response.readline, b""))
     except OSError as error:
         raise MegaHubError(str(error), method="GET", url=client.endpoint + path) from error
     finally:
         conn.close()
+
+
+def _iter_sse_data(lines: Iterable[bytes]) -> Iterator[str]:
+    """Yield payloads from data events while keeping protocol cursor events internal."""
+    event = ""
+    for raw in lines:
+        line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+        if not line:
+            event = ""
+        elif line.startswith("event:"):
+            event = line[6:].strip()
+        elif line.startswith("data:") and event != "cursor":
+            yield line[5:].lstrip()

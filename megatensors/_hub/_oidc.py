@@ -103,9 +103,9 @@ def exchange_oidc_token(*, subject_token: str, resource: str, endpoint: str | No
         subject_token (`str`):
             The raw OIDC id token (JWT) from the CI provider. Its `aud` claim must be the Hub URL.
         resource (`str`):
-            What to scope the token to: a Hub repo (`namespace/name`, `datasets/namespace/name`,
-            `spaces/namespace/name`, `kernels/namespace/name`) for a write token, or a bare Hub
-            username for a read-only `gated-repos` token.
+            MEGA namespace handle to scope the token to. A matching Trusted Publisher receives
+            short-lived repository and Bucket publish access within this namespace. Pass the
+            namespace only (for example, `"model-team"`), not a repository or Bucket ID.
         endpoint (`str`, *optional*):
             Hub endpoint. Defaults to `constants.ENDPOINT` (respects `MEGA_ENDPOINT`/staging).
 
@@ -141,7 +141,8 @@ def oidc_login(
 
     Args:
         resource (`str`):
-            Repo or username to scope the token to. See [`exchange_oidc_token`].
+            Namespace handle to scope repository and Bucket publishing to. See
+            [`exchange_oidc_token`].
         subject_token (`str`, *optional*):
             A pre-minted OIDC id token to exchange directly. Use this for CI providers not yet
             supported natively (e.g. GitLab): mint the id token in your job and pass it here. When

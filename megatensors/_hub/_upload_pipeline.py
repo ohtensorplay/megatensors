@@ -71,8 +71,10 @@ INITIAL_COMMIT_SIZE_INDEX = 6  # start at 256 files per commit
 TARGET_COMMIT_DURATION = 40.0  # seconds; scale up batch size if commits are faster than this
 MAX_COMMIT_INTERVAL = 5 * 60.0  # seconds; force a commit if the current batch is older than this
 
-# Budget of regular-file content per commit (regular files are base64-encoded in the payload).
-REGULAR_CONTENT_BYTES_BUDGET = 100 * 1024 * 1024
+# Budget of raw regular-file content per commit. The MEGA Hub accepts regular files up to
+# 20 MiB each and caps the complete NDJSON commit request at 32 MiB. Keeping the raw batch at
+# 20 MiB leaves room for base64 expansion (4/3), paths, and commit metadata.
+REGULAR_CONTENT_BYTES_BUDGET = 20 * 1024 * 1024
 
 _SENTINEL = object()  # Sentinel value for the batch queue to indicate the end of the upload
 
@@ -448,6 +450,15 @@ class _UploadPipeline:
                     self.display.notify_ignored(1)
                     continue
                 if op._upload_mode == "regular":
+                    # Flush before adding a regular file that would cross the raw-content budget.
+                    # Checking only after adding can overshoot by one full 20 MiB regular file and
+                    # produce a base64-expanded request larger than the Hub's 32 MiB body limit.
+                    if (
+                        batch.regular_bytes > 0
+                        and batch.regular_bytes + op.upload_info.size > REGULAR_CONTENT_BYTES_BUDGET
+                    ):
+                        self._enqueue(batch)
+                        batch = _Batch()
                     batch.regular_bytes += op.upload_info.size
                 else:
                     if batch.xet_commit is None:

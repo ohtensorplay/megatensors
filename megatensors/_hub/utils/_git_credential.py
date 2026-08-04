@@ -16,7 +16,7 @@
 import re
 import subprocess
 
-from ..constants import ENDPOINT
+from .. import constants
 from ._subprocess import run_interactive_subprocess, run_subprocess
 
 
@@ -67,12 +67,13 @@ def set_git_credential(token: str, username: str = "mega_user", folder: str | No
         folder (`str`, *optional*):
             The folder in which to check the configured helpers.
     """
-    with run_interactive_subprocess("git credential approve", folder=folder) as (
-        stdin,
-        _,
-    ):
-        stdin.write(f"url={ENDPOINT}\nusername={username.lower()}\npassword={token}\n\n")
-        stdin.flush()
+    for endpoint in dict.fromkeys((constants.ENDPOINT, constants.GIT_ENDPOINT)):
+        with run_interactive_subprocess("git credential approve", folder=folder) as (
+            stdin,
+            _,
+        ):
+            stdin.write(f"url={endpoint}\nusername={username.lower()}\npassword={token}\n\n")
+            stdin.flush()
 
 
 def unset_git_credential(username: str = "mega_user", folder: str | None = None) -> None:
@@ -89,17 +90,18 @@ def unset_git_credential(username: str = "mega_user", folder: str | None = None)
         folder (`str`, *optional*):
             The folder in which to check the configured helpers.
     """
-    with run_interactive_subprocess("git credential reject", folder=folder) as (
-        stdin,
-        _,
-    ):
-        standard_input = f"url={ENDPOINT}\n"
-        if username is not None:
-            standard_input += f"username={username.lower()}\n"
-        standard_input += "\n"
+    for endpoint in dict.fromkeys((constants.ENDPOINT, constants.GIT_ENDPOINT)):
+        with run_interactive_subprocess("git credential reject", folder=folder) as (
+            stdin,
+            _,
+        ):
+            standard_input = f"url={endpoint}\n"
+            if username is not None:
+                standard_input += f"username={username.lower()}\n"
+            standard_input += "\n"
 
-        stdin.write(standard_input)
-        stdin.flush()
+            stdin.write(standard_input)
+            stdin.flush()
 
 
 def _parse_credential_output(output: str) -> list[str]:

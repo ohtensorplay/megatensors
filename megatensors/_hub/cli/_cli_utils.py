@@ -678,7 +678,7 @@ def check_cli_update(library: Literal["megatensors", "huggingface_hub", "transfo
     If current version is a pre-release (e.g. `1.0.0.rc1`), or a dev version (e.g. `1.0.0.dev1`), no check is performed.
     If `MEGA_HUB_DISABLE_UPDATE_CHECK` is set, the check is skipped entirely.
 
-    This function is called at the entry point of the CLI. A successful check is cached for one hour, and any error
+    This function is called at the entry point of the CLI. A successful check is cached for 24 hours, and any error
     during the check is caught and logged, to avoid breaking the CLI.
 
     ``huggingface_hub`` is accepted as a source-compatible spelling and maps to

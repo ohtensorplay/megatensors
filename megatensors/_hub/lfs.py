@@ -160,7 +160,9 @@ def post_lfs_batch_info(
         revision (`str`, *optional*):
             The git revision to upload to.
         endpoint (`str`, *optional*):
-            The Hub endpoint to send the request to. Defaults to the value of `MEGA_ENDPOINT`.
+            The Hub endpoint associated with the repository. Production LFS
+            negotiation uses `MEGA_GIT_ENDPOINT`; self-hosted endpoints keep
+            their configured Hub origin unless that variable is overridden.
         headers (`dict`, *optional*):
             Additional headers to include in the request
         transfers (`list`, *optional*):
@@ -178,9 +180,10 @@ def post_lfs_batch_info(
         [`MegaHubHTTPError`]
             If the server returned an error.
     """
-    endpoint = endpoint if endpoint is not None else constants.ENDPOINT
+    hub_endpoint = (endpoint if endpoint is not None else constants.ENDPOINT).rstrip("/")
+    endpoint = constants.GIT_ENDPOINT if hub_endpoint == constants.ENDPOINT else hub_endpoint
     url_prefix = ""
-    if repo_type in constants.REPO_TYPES_URL_PREFIXES:
+    if endpoint == hub_endpoint and repo_type in constants.REPO_TYPES_URL_PREFIXES:
         url_prefix = constants.REPO_TYPES_URL_PREFIXES[repo_type]
     batch_url = f"{endpoint}/{url_prefix}{repo_id}.git/info/lfs/objects/batch"
     payload: dict = {

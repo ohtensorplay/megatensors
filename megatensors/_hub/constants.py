@@ -63,6 +63,11 @@ MEGA_URL_HOME = "https://mega.tensorplay.cn/"
 
 _MEGA_DEFAULT_ENDPOINT = "https://mega.tensorplay.cn"
 ENDPOINT = os.getenv("MEGA_ENDPOINT", _MEGA_DEFAULT_ENDPOINT).rstrip("/")
+_MEGA_DEFAULT_GIT_ENDPOINT = "https://git.tensorplay.cn"
+GIT_ENDPOINT = os.getenv(
+    "MEGA_GIT_ENDPOINT",
+    _MEGA_DEFAULT_GIT_ENDPOINT if ENDPOINT == _MEGA_DEFAULT_ENDPOINT else ENDPOINT,
+).rstrip("/")
 # The Worker exposes the immutable artifact endpoint behind the MEGA
 # download/cache machinery. ``revision`` is intentionally a query parameter.
 MEGA_URL_TEMPLATE = ENDPOINT + "/api/repos/{repo_id}/resolve/{filename}?revision={revision}"
@@ -222,7 +227,7 @@ def is_offline_mode() -> bool:
 
 # File created to mark that the version check has completed successfully.
 CHECK_FOR_UPDATE_DONE_PATH = os.path.join(MEGA_HOME, ".check_for_update_done")
-CHECK_FOR_UPDATE_INTERVAL_SECONDS = 60 * 60
+CHECK_FOR_UPDATE_INTERVAL_SECONDS = 24 * 60 * 60
 
 # File caching the AI agent harnesses registry fetched from `{ENDPOINT}/api/agent-harnesses`.
 # Refreshed once per 24 hours at most (see `utils/_detect_agent.py`).

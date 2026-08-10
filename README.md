@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://mega.tensorplay.cn/">
-    <img src="https://mega.tensorplay.cn/assets/logo-D1t6EjrA.webp" alt="MEGA" width="420" />
+    <img src="https://mega.tensorplay.cn/logo-light-128.png" alt="MEGA" width="128" />
   </a>
 </p>
 

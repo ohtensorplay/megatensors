@@ -13,6 +13,7 @@ from .api import (
     load_tensor,
     load_tokenizer,
     open_kv_cache,
+    write_tensorplay_file,
     write_kv_cache,
 )
 from .common import (
@@ -21,6 +22,7 @@ from .common import (
     MegaTensorsMetadata,
     MegaTokenizerInfo,
     TensorFrame,
+    TrustPolicy,
 )
 from .convert import ConvertResult, convert_model, resolve_artifacts
 from .hub import (
@@ -65,6 +67,7 @@ __all__ = [
     "load_tokenizer",
     "open_kv_cache",
     "load_kv_tensor",
+    "write_tensorplay_file",
     "write_kv_cache",
     "append_footer_overlay",
     "convert_model",
@@ -103,4 +106,5 @@ __all__ = [
     "MegaTensorsMetadata",
     "MegaTokenizerInfo",
     "TensorFrame",
+    "TrustPolicy",
 ]

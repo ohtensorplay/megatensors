@@ -2246,6 +2246,7 @@ static void write_file(
     }
 
     const uint64_t pad = (alignment - (header.size() % alignment)) % alignment;
+    const uint64_t payload_base = static_cast<uint64_t>(header.size()) + pad;
     pybind11::gil_scoped_release release;
     const int dst_fd = open(dst_filename.c_str(), O_WRONLY | O_CREAT | O_TRUNC
 #ifdef _MSC_VER
@@ -2261,6 +2262,11 @@ static void write_file(
             std::vector<uint8_t> zeros(static_cast<size_t>(pad), 0);
             write_all_fd(dst_fd, zeros, dst_filename);
         }
+        // Records may reference shared payload regions (several descriptors
+        // pointing at the same payload_offset), so honor each record's
+        // payload_offset explicitly.  Sequential layouts never seek and keep
+        // the historical append-only behavior.
+        uint64_t dst_cursor = payload_base;
         std::unordered_map<std::string, int> src_fds;
         try {
             for (const auto &rec : normalized) {
@@ -2276,6 +2282,12 @@ static void write_file(
                     }
                     it = src_fds.emplace(rec.src_filename, src_fd).first;
                 }
+                const uint64_t dst_offset = payload_base + rec.payload_offset;
+                if (dst_offset != dst_cursor) {
+                    if (lseek(dst_fd, static_cast<off_t>(dst_offset), SEEK_SET) < 0) {
+                        throw std::runtime_error(dst_filename + ": failed to seek to payload offset " + std::to_string(dst_offset));
+                    }
+                }
                 copy_fd_range(
                     it->second,
                     dst_fd,
@@ -2283,6 +2295,7 @@ static void write_file(
                     rec.stored_nbytes,
                     rec.src_filename
                 );
+                dst_cursor = dst_offset + rec.stored_nbytes;
             }
         } catch (...) {
             for (auto &item : src_fds) {

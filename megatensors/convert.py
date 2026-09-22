@@ -463,5 +463,12 @@ def _read_index(path: Path) -> list[str]:
         shard = Path(str(shard_value))
         if not shard.is_absolute():
             shard = path.parent / shard
+        elif not shard.exists():
+            # Indexes can be moved together with their shards after export.
+            # Prefer the co-located shard when the exporter recorded an
+            # absolute path from the source machine that is no longer valid.
+            colocated = path.parent / shard.name
+            if colocated.exists():
+                shard = colocated
         out.append(str(shard))
     return sorted(set(out))

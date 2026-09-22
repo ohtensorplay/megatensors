@@ -16,7 +16,7 @@ from cryptography.x509.oid import ExtendedKeyUsageOID
 from .api import append_footer_overlay
 from .common import (
     MEGA_TRUST_CERTIFICATE_FORMAT,
-    MEGA_TRUST_SIGNATURE_STATEMENT_PREFIX,
+    MEGA_TRUST_STATEMENT_PREFIX,
     MegaTensorsMetadata,
 )
 from .convert import resolve_artifacts
@@ -35,6 +35,7 @@ class SigningConfig:
     expires_at: int | None = None
     key_password: str | bytes | None = None
     generation: int = 1
+    source_version: str = ""
 
     @classmethod
     def from_pem_bundle(
@@ -42,6 +43,7 @@ class SigningConfig:
         bundle_pem: str | bytes,
         *,
         model_id: str,
+        source_version: str,
         key_password: str | bytes | None = None,
         algorithm: str = "sha256-rsa-pss",
         expires_at: int | None = None,
@@ -66,6 +68,7 @@ class SigningConfig:
             expires_at=expires_at,
             key_password=password,
             generation=generation,
+            source_version=source_version,
         )
 
 
@@ -78,6 +81,8 @@ def sign_artifact(filename: str | Path, config: SigningConfig) -> list[Path]:
 
 
 def _sign_one(path: Path, config: SigningConfig) -> None:
+    if not config.source_version or "\n" in config.source_version or "\r" in config.source_version:
+        raise ValueError("source_version must be non-empty and single-line")
     leaf_pem = _as_bytes(config.leaf_certificate_pem)
     chain_pem = _as_text(config.chain_pem)
     private_key = serialization.load_pem_private_key(
@@ -99,9 +104,12 @@ def _sign_one(path: Path, config: SigningConfig) -> None:
     fw = get_framework_op("pt")
     metadata = MegaTensorsMetadata.from_file(str(path), fw)
     payload_sha256 = metadata.compute_payload_sha256()
+    header_sha256 = metadata.compute_header_sha256()
     statement = _statement(
         publisher=config.publisher,
         model_id=config.model_id,
+        source_version=config.source_version,
+        header_sha256=header_sha256,
         payload_sha256=payload_sha256,
         created_at=now,
         expires_at=expires_at,
@@ -112,6 +120,7 @@ def _sign_one(path: Path, config: SigningConfig) -> None:
         str(path),
         {
             "mega.hash.payload.sha256": payload_sha256,
+            "mega.hash.header.sha256": header_sha256,
             "mega.trust.certificate.format": MEGA_TRUST_CERTIFICATE_FORMAT,
             "mega.trust.certificate.leaf_pem": leaf_pem.decode("utf-8"),
             "mega.trust.certificate.chain_pem": chain_pem,
@@ -127,6 +136,8 @@ def _statement(
     *,
     publisher: str,
     model_id: str,
+    source_version: str,
+    header_sha256: str,
     payload_sha256: str,
     created_at: int,
     expires_at: int,
@@ -134,16 +145,20 @@ def _statement(
     for name, value in {
         "publisher": publisher,
         "model_id": model_id,
+        "source_version": source_version,
+        "header_sha256": header_sha256,
         "payload_sha256": payload_sha256,
     }.items():
         if not value or "\n" in value or "\r" in value:
             raise ValueError(f"{name} must be non-empty and single-line")
     return (
-        MEGA_TRUST_SIGNATURE_STATEMENT_PREFIX +
-        "format_version=1\n"
+        MEGA_TRUST_STATEMENT_PREFIX +
+        "format_version=2\n"
         "artifact_kind=model\n"
         f"publisher={publisher}\n"
         f"model_id={model_id}\n"
+        f"source_version={source_version}\n"
+        f"header_sha256={header_sha256.lower()}\n"
         f"payload_sha256={payload_sha256.lower()}\n"
         f"created_at={int(created_at)}\n"
         f"expires_at={int(expires_at)}\n"

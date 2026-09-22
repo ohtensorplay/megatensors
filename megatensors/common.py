@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import base64
+import hashlib
 import logging
 import os
 import sys
@@ -26,18 +27,37 @@ MEGA_KNOWN_TENSOR_FLAGS = MEGA_TENSOR_FLAG_COMPRESSED | MEGA_TENSOR_FLAG_BYTE_SH
 MEGA_COMPRESSION_NONE = 0
 MEGA_COMPRESSION_ZSTD = 1
 MEGA_TRUST_CERTIFICATE_FORMAT = "x509-pem-v1"
-MEGA_TRUST_SIGNATURE_STATEMENT_PREFIX = "MEGA-TRUST-v1\n"
+MEGA_TRUST_STATEMENT_PREFIX = "MEGA-TRUST-v2\n"
 MEGA_TRUST_STATEMENT_KEYS = (
     "format_version",
     "artifact_kind",
     "publisher",
     "model_id",
+    "source_version",
+    "header_sha256",
     "payload_sha256",
     "created_at",
     "expires_at",
 )
 MEGAKV_KEY_ROLE = 1
 MEGAKV_VALUE_ROLE = 2
+
+
+@dataclass(frozen=True)
+class TrustPolicy:
+    """Load-time provenance policy for MEGA artifacts.
+
+    ``trusted_roots_pem`` holds the verifier's own trust anchors; artifacts
+    never carry trust. With ``strict=False`` a failed verification only warns
+    instead of raising, and ``allow_unsigned`` admits artifacts that carry no
+    signature at all.
+    """
+
+    trusted_roots_pem: str
+    strict: bool = True
+    allow_unsigned: bool = False
+    allowed_model_ids: Optional[Iterable[str]] = None
+    allowed_source_versions: Optional[Iterable[str]] = None
 
 
 @dataclass(frozen=True)
@@ -848,6 +868,34 @@ class MegaTensorsMetadata:
             )
         return True
 
+    def compute_header_sha256(self) -> str:
+        """Compute SHA-256 over the header region ``[0, header_length)``.
+
+        The footer overlay lives outside this range, so a signature embedding
+        this digest stays valid after an overlay append and still pins every
+        tensor-directory field (names, shapes, dtypes, offsets, checksums).
+        """
+        flags = os.O_RDONLY
+        if sys.platform == "win32" and hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        fd = os.open(self.src, flags, 0o644)
+        try:
+            digest = hashlib.sha256()
+            offset = 0
+            remaining = int(self.header_length)
+            while remaining > 0:
+                chunk = os.pread(fd, min(remaining, 1 << 20), offset)
+                if not chunk:
+                    raise ValueError(
+                        f"{self.src}: truncated header, expected {self.header_length} bytes"
+                    )
+                digest.update(chunk)
+                offset += len(chunk)
+                remaining -= len(chunk)
+        finally:
+            os.close(fd)
+        return digest.hexdigest()
+
     def _trust_result(
         self,
         risk: str,
@@ -876,8 +924,8 @@ class MegaTensorsMetadata:
             text = statement.decode("utf-8")
         except UnicodeDecodeError:
             raise ValueError("statement is not valid UTF-8")
-        if not text.startswith(MEGA_TRUST_SIGNATURE_STATEMENT_PREFIX):
-            raise ValueError("statement missing MEGA-TRUST-v1 prefix")
+        if not text.startswith(MEGA_TRUST_STATEMENT_PREFIX):
+            raise ValueError("statement missing MEGA-TRUST-v2 prefix")
         if not text.endswith("\n"):
             raise ValueError("statement must end with a newline")
         lines = text.splitlines()
@@ -898,10 +946,15 @@ class MegaTensorsMetadata:
             if "\r" in value or "\n" in value:
                 raise ValueError(f"statement field {key} contains a newline")
             values[key] = value
-        if values["format_version"] != "1":
+        if values["format_version"] != "2":
             raise ValueError("unsupported statement format_version")
         if values["artifact_kind"] != "model":
             raise ValueError("statement artifact_kind must be model")
+        header_sha256 = values["header_sha256"].lower()
+        if len(header_sha256) != 64 or any(
+            c not in "0123456789abcdef" for c in header_sha256
+        ):
+            raise ValueError("statement header_sha256 must be 64 hex characters")
         for key in ("created_at", "expires_at"):
             try:
                 int(values[key])
@@ -922,13 +975,16 @@ class MegaTensorsMetadata:
         strict: bool = False,
         warn: bool = True,
         allowed_model_ids: Optional[Iterable[str]] = None,
+        allowed_source_versions: Optional[Iterable[str]] = None,
         now: Optional[int] = None,
     ) -> Dict:
         """Verify artifact provenance using an external X.509 trust root.
 
         The artifact may carry a leaf certificate, optional intermediate chain,
         signed statement, and signature. Trust roots must come from caller
-        policy, not from the artifact itself.
+        policy, not from the artifact itself. The signed statement binds both
+        the payload digest and the header digest, so tampering with tensor
+        directory metadata is rejected as well.
         """
         leaf_pem = self.metadata.get("mega.trust.certificate.leaf_pem")
         statement = self.metadata.get("mega.trust.signature.statement")
@@ -987,12 +1043,31 @@ class MegaTensorsMetadata:
                 payload_sha256=payload_sha256,
                 statement_payload_sha256=statement_sha256,
             )
+        header_sha256 = self.compute_header_sha256()
+        statement_header_sha256 = statement_fields["header_sha256"].strip().lower()
+        if statement_header_sha256 != header_sha256:
+            return self._trust_result(
+                "header_mismatch",
+                strict=strict,
+                warn=warn,
+                header_sha256=header_sha256,
+                statement_header_sha256=statement_header_sha256,
+            )
         if not self._allowed(statement_fields["model_id"], allowed_model_ids):
             return self._trust_result(
                 "model_not_allowed",
                 strict=strict,
                 warn=warn,
                 model_id=statement_fields["model_id"],
+            )
+        if allowed_source_versions is not None and not self._allowed(
+            statement_fields["source_version"], allowed_source_versions
+        ):
+            return self._trust_result(
+                "source_version_not_allowed",
+                strict=strict,
+                warn=warn,
+                source_version=statement_fields["source_version"],
             )
         current_time = int(time.time()) if now is None else int(now)
         created_at = int(statement_fields["created_at"])
@@ -1025,6 +1100,7 @@ class MegaTensorsMetadata:
         result = dict(result)
         result["statement"] = statement_fields
         result["payload_sha256"] = payload_sha256
+        result["header_bound"] = True
         result["source_risk"] = not bool(result.get("trusted"))
         subject = str(result.get("subject", ""))
         if bool(result.get("trusted")) and statement_fields["publisher"] != subject:

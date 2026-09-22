@@ -18,6 +18,7 @@ from . import cpp as megacpp
 from .common import (
     MegaTensorsMetadata,
     TensorFrame,
+    TrustPolicy,
     get_device_numa_node,
     init_logger,
 )
@@ -356,6 +357,26 @@ class MegaTensorsFileLoader(BaseMegaTensorsFileLoader):
         )
 
 
+def _verify_loader_trust(loader: "MegaTensorsFileLoader", policy: TrustPolicy) -> None:
+    """Enforce a load-time provenance policy on every registered artifact.
+
+    Runs after metadata parse and before payload copy, so a rejected artifact
+    never reaches device memory. Strict policies raise; lenient ones rely on
+    the warnings emitted by ``verify_trust``.
+    """
+    for filename, (metadata, _) in loader.meta.items():
+        has_signature = bool(metadata.metadata.get("mega.trust.signature.value"))
+        if policy.allow_unsigned and not has_signature:
+            continue
+        metadata.verify_trust(
+            policy.trusted_roots_pem,
+            strict=policy.strict,
+            warn=not policy.strict,
+            allowed_model_ids=policy.allowed_model_ids,
+            allowed_source_versions=policy.allowed_source_versions,
+        )
+
+
 class mega_open:
     """
     Opens MEGA tensor artifact files lazily and returns tensors as requested.
@@ -365,8 +386,10 @@ class mega_open:
 
     Args:
         filenames (:obj:`str`|`list[str]`|`dict[int, str]`): The filename(s) or rank-file map to open
-        framework (:obj:`str`): `pt`, `pytorch`, and `paddle` are only supported currently
+        framework (:obj:`str`): `pt`, `pytorch`, `tensorplay`, `tp`, and `paddle`
         device (:obj:`str`, defaults to :obj:`"cpu"`): The device on which you want the tensors.
+        trust_policy (:obj:`TrustPolicy`, optional): Load-time provenance policy;
+            when given, every artifact is verified before any tensor is copied.
     """
 
     def __init__(
@@ -378,6 +401,7 @@ class mega_open:
         nogds: bool = False,
         debug_log: bool = False,
         max_copy_block_size: int = 256 * 1024 * 1024,
+        trust_policy: Optional[TrustPolicy] = None,
     ):
         self.loader = MegaTensorsFileLoader(
             pg, device, nogds=nogds, debug_log=debug_log, framework=framework
@@ -400,6 +424,8 @@ class mega_open:
                 for rank, rank_filenames in filenames.items()
             }
         self.loader.add_filenames(file_dict)
+        if trust_policy is not None:
+            _verify_loader_trust(self.loader, trust_policy)
         self.fb = self.loader.copy_files_to_device(
             max_copy_block_size=max_copy_block_size
         )
@@ -432,8 +458,19 @@ class mega_open:
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc_value, tb):
+    def close(self):
+        """Release the mapped buffers and loader without a ``with`` block.
+
+        Equivalent to leaving the context manager; safe to call twice.  Needed
+        by callers that keep the artifact open for zero-copy (mmap) tensor
+        views and only release it when the returned containers die.
+        """
         if self.fb:
             self.fb.close()
+            self.fb = None
         if self.loader:
             self.loader.close()
+            self.loader = None
+
+    def __exit__(self, exc_type, exc_value, tb):
+        self.close()

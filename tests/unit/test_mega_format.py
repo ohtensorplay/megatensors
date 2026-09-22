@@ -16,6 +16,8 @@ from megatensors import cpp as megacpp
 from megatensors import (
     MegaKvMetadata,
     MegaTensorsMetadata,
+    SigningConfig,
+    TrustPolicy,
     append_footer_overlay,
     iter_tensors,
     load_kv_tensor,
@@ -25,6 +27,7 @@ from megatensors import (
     load_tokenizer,
     mega_open,
     open_kv_cache,
+    sign_artifact,
     write_kv_cache,
 )
 from megatensors.frameworks import get_framework_op
@@ -150,6 +153,67 @@ def _trust_statement(
         f"created_at={created_at}\n"
         f"expires_at={expires_at}\n"
     ).encode("utf-8")
+
+
+def _trust_statement(
+    payload_sha256: str,
+    header_sha256: str = "0" * 64,
+    *,
+    publisher: str = "CN=MEGA Test Publisher",
+    model_id: str = "test-model",
+    source_version: str = "ckpt-1",
+    created_at: int = 1_700_000_000,
+    expires_at: int = 4_102_444_800,
+) -> bytes:
+    return (
+        "MEGA-TRUST-v2\n"
+        "format_version=2\n"
+        "artifact_kind=model\n"
+        f"publisher={publisher}\n"
+        f"model_id={model_id}\n"
+        f"source_version={source_version}\n"
+        f"header_sha256={header_sha256}\n"
+        f"payload_sha256={payload_sha256}\n"
+        f"created_at={created_at}\n"
+        f"expires_at={expires_at}\n"
+    ).encode("utf-8")
+
+
+def _trust_tensor_entry(payload: bytes) -> dict:
+    return {
+        "name": "layers.0.weight",
+        "shape": [2],
+        "logical_dtype": "F32",
+        "storage_format": "raw_dense",
+        "logical_nbytes": len(payload),
+        "data": payload,
+    }
+
+
+def _attach_trust_metadata(
+    tmp_path,
+    path,
+    statement: bytes,
+    *,
+    code_signing: bool = True,
+    algorithm: str = "sha256-rsa-pkcs1",
+) -> str:
+    """Sign ``statement`` with a throwaway CA and attach the trust metadata."""
+    root_pem, leaf_pem, signature_b64 = _make_signed_trust_statement(
+        tmp_path, statement, code_signing=code_signing
+    )
+    append_footer_overlay(
+        path,
+        {
+            "mega.trust.certificate.format": "x509-pem-v1",
+            "mega.trust.certificate.leaf_pem": leaf_pem,
+            "mega.trust.signature.algorithm": algorithm,
+            "mega.trust.signature.statement": statement.decode("utf-8"),
+            "mega.trust.signature.value": signature_b64,
+        },
+        generation=1,
+    )
+    return root_pem
 
 
 def _make_signed_trust_statement(tmp_path, statement: bytes, *, code_signing=True):
@@ -989,45 +1053,42 @@ def test_mega_x509_trust_requires_external_authority_and_signed_payload(
     path = os.path.join(tmp_path, "trusted.mega")
     payload = struct.pack("<4f", 1.0, 2.0, 3.0, 4.0)
     payload_sha256 = hashlib.sha256(payload).hexdigest()
-    statement = _trust_statement(payload_sha256)
-    root_pem, leaf_pem, signature_b64 = _make_signed_trust_statement(
-        tmp_path, statement
-    )
     _write_mega(
         path,
         [
             {
                 "name": "layers.0.weight",
-                "shape": [2, 2],
+                "shape": [4],
                 "logical_dtype": "F32",
                 "storage_format": "raw_dense",
                 "logical_nbytes": len(payload),
                 "data": payload,
             }
         ],
-        metadata={
-            "mega.hash.payload.sha256": payload_sha256,
-            "mega.trust.certificate.format": "x509-pem-v1",
-            "mega.trust.certificate.leaf_pem": leaf_pem,
-            "mega.trust.signature.algorithm": "sha256-rsa-pkcs1",
-            "mega.trust.signature.statement": statement.decode("utf-8"),
-            "mega.trust.signature.value": signature_b64,
-        },
+        metadata={"mega.hash.payload.sha256": payload_sha256},
     )
+    header_sha256 = MegaTensorsMetadata.from_file(
+        path, framework
+    ).compute_header_sha256()
+    statement = _trust_statement(payload_sha256, header_sha256)
+    root_pem = _attach_trust_metadata(tmp_path, path, statement)
 
     meta = MegaTensorsMetadata.from_file(path, framework)
     trusted = meta.verify_trust(
         root_pem,
         warn=False,
         allowed_model_ids={"test-model"},
+        allowed_source_versions={"ckpt-1"},
     )
     assert trusted["trusted"] is True
     assert trusted["risk"] == "trusted"
     assert trusted["chain_trusted"] is True
     assert trusted["certificate_policy_valid"] is True
     assert trusted["signature_valid"] is True
+    assert trusted["header_bound"] is True
     assert trusted["payload_sha256"] == payload_sha256
     assert trusted["statement"]["publisher"] == "CN=MEGA Test Publisher"
+    assert trusted["statement"]["source_version"] == "ckpt-1"
 
     with pytest.warns(RuntimeWarning, match="source risk: untrusted_issuer"):
         untrusted = meta.verify_trust("", warn=True)
@@ -1043,31 +1104,16 @@ def test_mega_x509_trust_rejects_statement_not_bound_to_payload(
     path = os.path.join(tmp_path, "bad-trust-hash.mega")
     payload = struct.pack("<2f", 1.0, 2.0)
     payload_sha256 = hashlib.sha256(payload).hexdigest()
-    statement = _trust_statement("00" * 32)
-    root_pem, leaf_pem, signature_b64 = _make_signed_trust_statement(
-        tmp_path, statement
-    )
     _write_mega(
         path,
-        [
-            {
-                "name": "layers.0.weight",
-                "shape": [2],
-                "logical_dtype": "F32",
-                "storage_format": "raw_dense",
-                "logical_nbytes": len(payload),
-                "data": payload,
-            }
-        ],
-        metadata={
-            "mega.hash.payload.sha256": payload_sha256,
-            "mega.trust.certificate.format": "x509-pem-v1",
-            "mega.trust.certificate.leaf_pem": leaf_pem,
-            "mega.trust.signature.algorithm": "sha256-rsa-pkcs1",
-            "mega.trust.signature.statement": statement.decode("utf-8"),
-            "mega.trust.signature.value": signature_b64,
-        },
+        [_trust_tensor_entry(payload)],
+        metadata={"mega.hash.payload.sha256": payload_sha256},
     )
+    header_sha256 = MegaTensorsMetadata.from_file(
+        path, framework
+    ).compute_header_sha256()
+    statement = _trust_statement("00" * 32, header_sha256)
+    root_pem = _attach_trust_metadata(tmp_path, path, statement)
 
     meta = MegaTensorsMetadata.from_file(path, framework)
     with pytest.warns(RuntimeWarning, match="source risk: hash_mismatch"):
@@ -1081,31 +1127,18 @@ def test_mega_x509_trust_rejects_publisher_certificate_mismatch(tmp_path, framew
     path = os.path.join(tmp_path, "bad-publisher.mega")
     payload = struct.pack("<2f", 1.0, 2.0)
     payload_sha256 = hashlib.sha256(payload).hexdigest()
-    statement = _trust_statement(payload_sha256, publisher="unknown-publisher")
-    root_pem, leaf_pem, signature_b64 = _make_signed_trust_statement(
-        tmp_path, statement
-    )
     _write_mega(
         path,
-        [
-            {
-                "name": "layers.0.weight",
-                "shape": [2],
-                "logical_dtype": "F32",
-                "storage_format": "raw_dense",
-                "logical_nbytes": len(payload),
-                "data": payload,
-            }
-        ],
-        metadata={
-            "mega.hash.payload.sha256": payload_sha256,
-            "mega.trust.certificate.format": "x509-pem-v1",
-            "mega.trust.certificate.leaf_pem": leaf_pem,
-            "mega.trust.signature.algorithm": "sha256-rsa-pkcs1",
-            "mega.trust.signature.statement": statement.decode("utf-8"),
-            "mega.trust.signature.value": signature_b64,
-        },
+        [_trust_tensor_entry(payload)],
+        metadata={"mega.hash.payload.sha256": payload_sha256},
     )
+    header_sha256 = MegaTensorsMetadata.from_file(
+        path, framework
+    ).compute_header_sha256()
+    statement = _trust_statement(
+        payload_sha256, header_sha256, publisher="unknown-publisher"
+    )
+    root_pem = _attach_trust_metadata(tmp_path, path, statement)
 
     meta = MegaTensorsMetadata.from_file(path, framework)
     with pytest.warns(RuntimeWarning, match="source risk: publisher_certificate_mismatch"):
@@ -1118,35 +1151,21 @@ def test_mega_x509_trust_rejects_expired_statement(tmp_path, framework):
     path = os.path.join(tmp_path, "expired-statement.mega")
     payload = struct.pack("<2f", 1.0, 2.0)
     payload_sha256 = hashlib.sha256(payload).hexdigest()
+    _write_mega(
+        path,
+        [_trust_tensor_entry(payload)],
+        metadata={"mega.hash.payload.sha256": payload_sha256},
+    )
+    header_sha256 = MegaTensorsMetadata.from_file(
+        path, framework
+    ).compute_header_sha256()
     statement = _trust_statement(
         payload_sha256,
+        header_sha256,
         created_at=100,
         expires_at=200,
     )
-    root_pem, leaf_pem, signature_b64 = _make_signed_trust_statement(
-        tmp_path, statement
-    )
-    _write_mega(
-        path,
-        [
-            {
-                "name": "layers.0.weight",
-                "shape": [2],
-                "logical_dtype": "F32",
-                "storage_format": "raw_dense",
-                "logical_nbytes": len(payload),
-                "data": payload,
-            }
-        ],
-        metadata={
-            "mega.hash.payload.sha256": payload_sha256,
-            "mega.trust.certificate.format": "x509-pem-v1",
-            "mega.trust.certificate.leaf_pem": leaf_pem,
-            "mega.trust.signature.algorithm": "sha256-rsa-pkcs1",
-            "mega.trust.signature.statement": statement.decode("utf-8"),
-            "mega.trust.signature.value": signature_b64,
-        },
-    )
+    root_pem = _attach_trust_metadata(tmp_path, path, statement)
 
     meta = MegaTensorsMetadata.from_file(path, framework)
     with pytest.warns(RuntimeWarning, match="source risk: statement_expired"):
@@ -1161,31 +1180,16 @@ def test_mega_x509_trust_rejects_leaf_without_code_signing_usage(
     path = os.path.join(tmp_path, "bad-cert-policy.mega")
     payload = struct.pack("<2f", 1.0, 2.0)
     payload_sha256 = hashlib.sha256(payload).hexdigest()
-    statement = _trust_statement(payload_sha256)
-    root_pem, leaf_pem, signature_b64 = _make_signed_trust_statement(
-        tmp_path, statement, code_signing=False
-    )
     _write_mega(
         path,
-        [
-            {
-                "name": "layers.0.weight",
-                "shape": [2],
-                "logical_dtype": "F32",
-                "storage_format": "raw_dense",
-                "logical_nbytes": len(payload),
-                "data": payload,
-            }
-        ],
-        metadata={
-            "mega.hash.payload.sha256": payload_sha256,
-            "mega.trust.certificate.format": "x509-pem-v1",
-            "mega.trust.certificate.leaf_pem": leaf_pem,
-            "mega.trust.signature.algorithm": "sha256-rsa-pkcs1",
-            "mega.trust.signature.statement": statement.decode("utf-8"),
-            "mega.trust.signature.value": signature_b64,
-        },
+        [_trust_tensor_entry(payload)],
+        metadata={"mega.hash.payload.sha256": payload_sha256},
     )
+    header_sha256 = MegaTensorsMetadata.from_file(
+        path, framework
+    ).compute_header_sha256()
+    statement = _trust_statement(payload_sha256, header_sha256)
+    root_pem = _attach_trust_metadata(tmp_path, path, statement, code_signing=False)
 
     meta = MegaTensorsMetadata.from_file(path, framework)
     with pytest.warns(RuntimeWarning, match="source risk: certificate_policy_invalid"):
@@ -1198,41 +1202,160 @@ def test_mega_x509_trust_rejects_noncanonical_statement(tmp_path, framework):
     path = os.path.join(tmp_path, "bad-statement.mega")
     payload = struct.pack("<2f", 1.0, 2.0)
     payload_sha256 = hashlib.sha256(payload).hexdigest()
+    _write_mega(
+        path,
+        [_trust_tensor_entry(payload)],
+        metadata={"mega.hash.payload.sha256": payload_sha256},
+    )
     statement = (
         "MEGA-TRUST-v1\n"
         f"payload_sha256={payload_sha256}\n"
         "artifact_kind=model\n"
     ).encode("utf-8")
-    root_pem, leaf_pem, signature_b64 = _make_signed_trust_statement(
-        tmp_path, statement
-    )
-    _write_mega(
-        path,
-        [
-            {
-                "name": "layers.0.weight",
-                "shape": [2],
-                "logical_dtype": "F32",
-                "storage_format": "raw_dense",
-                "logical_nbytes": len(payload),
-                "data": payload,
-            }
-        ],
-        metadata={
-            "mega.hash.payload.sha256": payload_sha256,
-            "mega.trust.certificate.format": "x509-pem-v1",
-            "mega.trust.certificate.leaf_pem": leaf_pem,
-            "mega.trust.signature.algorithm": "sha256-rsa-pkcs1",
-            "mega.trust.signature.statement": statement.decode("utf-8"),
-            "mega.trust.signature.value": signature_b64,
-        },
-    )
+    root_pem = _attach_trust_metadata(tmp_path, path, statement)
 
     meta = MegaTensorsMetadata.from_file(path, framework)
     with pytest.warns(RuntimeWarning, match="source risk: statement_invalid"):
         result = meta.verify_trust(root_pem)
     assert result["trusted"] is False
     assert result["risk"] == "statement_invalid"
+
+
+def test_mega_trust_rejects_header_tamper(tmp_path, framework):
+    path = os.path.join(tmp_path, "header-tamper.mega")
+    payload = struct.pack("<2f", 1.0, 2.0)
+    payload_sha256 = hashlib.sha256(payload).hexdigest()
+    _write_mega(
+        path,
+        [_trust_tensor_entry(payload)],
+        metadata={"mega.hash.payload.sha256": payload_sha256},
+    )
+    header_sha256 = MegaTensorsMetadata.from_file(
+        path, framework
+    ).compute_header_sha256()
+    statement = _trust_statement(payload_sha256, header_sha256)
+    root_pem = _attach_trust_metadata(tmp_path, path, statement)
+
+    raw = open(path, "rb").read()
+    open(path, "wb").write(raw.replace(b"layers.0.weight", b"layers.9.weight"))
+
+    meta = MegaTensorsMetadata.from_file(path, framework)
+    assert meta.compute_header_sha256() != header_sha256
+    with pytest.warns(RuntimeWarning, match="source risk: header_mismatch"):
+        result = meta.verify_trust(root_pem)
+    assert result["trusted"] is False
+    assert result["risk"] == "header_mismatch"
+
+
+def test_mega_trust_enforces_source_version_policy(tmp_path, framework):
+    path = os.path.join(tmp_path, "version-policy.mega")
+    payload = struct.pack("<2f", 1.0, 2.0)
+    payload_sha256 = hashlib.sha256(payload).hexdigest()
+    _write_mega(
+        path,
+        [_trust_tensor_entry(payload)],
+        metadata={"mega.hash.payload.sha256": payload_sha256},
+    )
+    header_sha256 = MegaTensorsMetadata.from_file(
+        path, framework
+    ).compute_header_sha256()
+    statement = _trust_statement(payload_sha256, header_sha256)
+    root_pem = _attach_trust_metadata(tmp_path, path, statement)
+
+    meta = MegaTensorsMetadata.from_file(path, framework)
+    trusted = meta.verify_trust(
+        root_pem, warn=False, allowed_source_versions={"ckpt-1"}
+    )
+    assert trusted["trusted"] is True
+    with pytest.warns(
+        RuntimeWarning, match="source risk: source_version_not_allowed"
+    ):
+        result = meta.verify_trust(root_pem, allowed_source_versions={"ckpt-2"})
+    assert result["trusted"] is False
+    assert result["risk"] == "source_version_not_allowed"
+    assert result["source_version"] == "ckpt-1"
+
+
+def test_mega_sign_artifact_binds_header_and_payload(tmp_path):
+    payload = struct.pack("<2f", 1.0, 2.0)
+    payload_sha256 = hashlib.sha256(payload).hexdigest()
+    path = os.path.join(tmp_path, "api-signed.mega")
+    _write_mega(
+        path,
+        [_trust_tensor_entry(payload)],
+        metadata={"mega.hash.payload.sha256": payload_sha256},
+    )
+
+    root_pem, _, _ = _make_signed_trust_statement(tmp_path, b"dummy")
+    bundle = (
+        open(os.path.join(tmp_path, "leaf.key"), "rb").read()
+        + open(os.path.join(tmp_path, "leaf.pem"), "rb").read()
+        + open(os.path.join(tmp_path, "root.pem"), "rb").read()
+    )
+    config = SigningConfig.from_pem_bundle(
+        bundle, model_id="test-model", source_version="ckpt-1"
+    )
+    signed_paths = sign_artifact(path, config)
+    assert [p.name for p in signed_paths] == ["api-signed.mega"]
+
+    meta = MegaTensorsMetadata.from_file(str(path), get_framework_op("pt"))
+    result = meta.verify_trust(
+        root_pem,
+        warn=False,
+        allowed_model_ids={"test-model"},
+        allowed_source_versions={"ckpt-1"},
+    )
+    assert result["trusted"] is True
+    assert result["risk"] == "trusted"
+    assert result["header_bound"] is True
+    assert result["statement"]["header_sha256"] == meta.compute_header_sha256()
+    assert result["statement"]["payload_sha256"] == payload_sha256
+
+
+def test_mega_open_enforces_trust_policy(tmp_path, framework):
+    if framework.get_name() != "pytorch":
+        pytest.skip("test uses torch tensor assertions")
+    import torch
+
+    payload = struct.pack("<2f", 1.0, 2.0)
+    payload_sha256 = hashlib.sha256(payload).hexdigest()
+    path = os.path.join(tmp_path, "policy.mega")
+    _write_mega(
+        path,
+        [_trust_tensor_entry(payload)],
+        metadata={"mega.hash.payload.sha256": payload_sha256},
+    )
+    header_sha256 = MegaTensorsMetadata.from_file(
+        path, framework
+    ).compute_header_sha256()
+    statement = _trust_statement(payload_sha256, header_sha256)
+    root_pem = _attach_trust_metadata(tmp_path, path, statement)
+
+    policy = TrustPolicy(
+        root_pem,
+        allowed_model_ids={"test-model"},
+        allowed_source_versions={"ckpt-1"},
+    )
+    state_dict = load_state_dict(path, trust_policy=policy)
+    assert torch.equal(
+        state_dict["layers.0.weight"], torch.tensor([1.0, 2.0], dtype=torch.float32)
+    )
+
+    tampered = os.path.join(tmp_path, "tampered.mega")
+    shutil.copyfile(path, tampered)
+    raw = open(tampered, "rb").read()
+    open(tampered, "wb").write(raw.replace(b"layers.0.weight", b"layers.9.weight"))
+    with pytest.raises(ValueError, match="header_mismatch"):
+        load_state_dict(tampered, trust_policy=policy)
+
+    unsigned = os.path.join(tmp_path, "unsigned-policy.mega")
+    _write_mega(unsigned, [_trust_tensor_entry(payload)])
+    with pytest.raises(ValueError, match="source risk: unsigned"):
+        load_state_dict(unsigned, trust_policy=TrustPolicy(root_pem))
+    allowed = load_state_dict(
+        unsigned, trust_policy=TrustPolicy(root_pem, allow_unsigned=True)
+    )
+    assert "layers.0.weight" in allowed
 
 
 def test_mega_unsigned_artifact_reports_source_risk(tmp_path, framework):

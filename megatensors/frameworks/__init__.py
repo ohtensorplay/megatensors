@@ -258,6 +258,8 @@ def get_framework_op(name: str) -> FrameworkOpBase:
         from ._torch import get_framework_op as op
     elif name == "paddle":
         from ._paddle import get_framework_op as op
+    elif name == "tp" or name == "tensorplay":
+        from ._tensorplay import get_framework_op as op
     else:
         raise Exception(f"Unknown framework name: {name}")
     return op()

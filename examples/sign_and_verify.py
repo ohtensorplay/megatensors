@@ -34,6 +34,17 @@ def parse_args() -> argparse.Namespace:
         help="Expected model_id in the signed statement. Defaults to artifact basename",
     )
     parser.add_argument(
+        "--source-version",
+        required=True,
+        help="Source version recorded in the signed statement and checked at verify time",
+    )
+    parser.add_argument(
+        "--allowed-source-version",
+        action="append",
+        default=None,
+        help="Allowed source_version during verification; repeat to allow more than one",
+    )
+    parser.add_argument(
         "--algorithm",
         default="sha256-rsa-pss",
         choices=["sha256-rsa-pss", "sha256-rsa-pkcs1", "sha256-rsa", "sha256-ecdsa"],
@@ -72,7 +83,13 @@ def _default_model_id(path: Path) -> str:
     return path.stem
 
 
-def _verify(paths: list[str], trusted_roots: Path, model_id: str, strict: bool) -> int:
+def _verify(
+    paths: list[str],
+    trusted_roots: Path,
+    model_id: str,
+    strict: bool,
+    allowed_source_versions: list[str] | None,
+) -> int:
     fw = get_framework_op("pt")
     trusted_roots_pem = trusted_roots.read_text(encoding="utf-8")
     failures = 0
@@ -83,6 +100,7 @@ def _verify(paths: list[str], trusted_roots: Path, model_id: str, strict: bool) 
             strict=strict,
             warn=not strict,
             allowed_model_ids=[model_id],
+            allowed_source_versions=allowed_source_versions,
         )
         statement = result.get("statement", {})
         print(
@@ -106,6 +124,7 @@ def main() -> None:
     config = SigningConfig.from_pem_bundle(
         args.bundle.read_bytes(),
         model_id=model_id,
+        source_version=args.source_version,
         key_password=args.key_password,
         algorithm=args.algorithm,
         expires_at=expires_at,
@@ -119,7 +138,13 @@ def main() -> None:
     if args.trusted_roots is None:
         return
 
-    failures = _verify([str(path) for path in signed_paths], args.trusted_roots, model_id, args.strict_verify)
+    failures = _verify(
+        [str(path) for path in signed_paths],
+        args.trusted_roots,
+        model_id,
+        args.strict_verify,
+        args.allowed_source_version or [args.source_version],
+    )
     if failures:
         raise SystemExit(1)
 

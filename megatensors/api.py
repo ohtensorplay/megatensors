@@ -5,7 +5,7 @@ from importlib import import_module
 from typing import Any, Callable, Dict, Iterable, Iterator, Mapping, Optional, Union
 
 from . import cpp as megacpp
-from .common import MegaKvMetadata, MegaTensorsMetadata
+from .common import MegaKvMetadata, MegaTensorsMetadata, TrustPolicy
 from .convert import read_index_metadata, resolve_artifacts
 from .frameworks import get_framework_op
 from .loader import mega_open
@@ -51,6 +51,7 @@ def iter_tensors(
     key_mapping: Optional[Callable[[str], str]] = None,
     framework: str = "pt",
     nogds: bool = False,
+    trust_policy: Optional[TrustPolicy] = None,
 ) -> Iterator[tuple[str, Any]]:
     """Yield cloned ``(name, tensor)`` pairs outside the file-buffer lifetime."""
     with mega_open(
@@ -58,6 +59,7 @@ def iter_tensors(
         framework=framework,
         device=device,
         nogds=nogds,
+        trust_policy=trust_policy,
     ) as artifact:
         for name in artifact.keys():
             if tensor_filter is not None and not tensor_filter(name):
@@ -74,6 +76,7 @@ def load_tensor(
     dtype: DType = DType.AUTO,
     framework: str = "pt",
     nogds: bool = False,
+    trust_policy: Optional[TrustPolicy] = None,
 ) -> Any:
     """Load one MEGA tensor by name and clone it out of the file buffer."""
     with mega_open(
@@ -81,6 +84,7 @@ def load_tensor(
         framework=framework,
         device=device,
         nogds=nogds,
+        trust_policy=trust_policy,
     ) as artifact:
         return _clone_tensor(artifact.fb.get_tensor(name, dtype=dtype))
 
@@ -96,6 +100,7 @@ def load_state_dict(
     nogds: bool = False,
     strict_unique: bool = True,
     borrow: bool = False,
+    trust_policy: Optional[TrustPolicy] = None,
 ) -> "OrderedDict[str, Any]":
     """Load MEGA weights as a PyTorch-style ``state_dict``."""
     if borrow:
@@ -104,6 +109,7 @@ def load_state_dict(
             framework=framework,
             device=device,
             nogds=nogds,
+            trust_policy=trust_policy,
         )
         state_dict: "OrderedDict[str, Any]" = BorrowedStateDict(artifact)
         try:
@@ -127,11 +133,35 @@ def load_state_dict(
         key_mapping=key_mapping,
         framework=framework,
         nogds=nogds,
+        trust_policy=trust_policy,
     ):
         if strict_unique and out_name in state_dict:
             raise ValueError(f"duplicate state_dict key after mapping: {out_name}")
         state_dict[out_name] = tensor
     return state_dict
+
+
+def write_tensorplay_file(
+    filename: str,
+    tensors: Any,
+    *,
+    metadata: Optional[Mapping[str, Any]] = None,
+    alignment: int = 4096,
+) -> None:
+    """Write TensorPlay tensors as a self-describing MEGA artifact.
+
+    TensorPlay owns the native tensor memory and raw-byte export; this adapter
+    delegates the canonical MEGA header and payload writer to the C++ backend.
+    The import remains lazy so TensorPlay is optional for all other frameworks.
+    """
+    from .frameworks._tensorplay import write_tensorplay_file as _write
+
+    _write(
+        filename,
+        tensors,
+        metadata=metadata,
+        alignment=alignment,
+    )
 
 
 def load_model(
@@ -143,13 +173,15 @@ def load_model(
     key_mapping: Optional[Callable[[str], str]] = None,
     model_class: Optional[Union[str, Callable[..., Any]]] = None,
     model_kwargs: Optional[Mapping[str, Any]] = None,
+    framework: str = "pt",
     strict: bool = True,
     assign: bool = False,
     nogds: bool = False,
+    trust_policy: Optional[TrustPolicy] = None,
 ) -> Any:
     """Construct a model object from MEGA metadata and load its weights."""
     metadata_filename = filenames if isinstance(filenames, str) else _first_filename(filenames)
-    fw = get_framework_op("pt")
+    fw = get_framework_op(framework)
     if str(metadata_filename).endswith(".mega.index.json"):
         metadata = read_index_metadata(metadata_filename)
     else:
@@ -173,9 +205,10 @@ def load_model(
         dtype=dtype,
         tensor_filter=tensor_filter,
         key_mapping=key_mapping,
-        framework="pt",
+        framework=framework,
         nogds=nogds,
         borrow=assign,
+        trust_policy=trust_policy,
     )
     try:
         model.load_state_dict(state_dict, strict=strict, assign=assign)

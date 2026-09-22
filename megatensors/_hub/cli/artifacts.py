@@ -24,9 +24,13 @@ def convert(
         Path | None,
         Option("--sign-bundle", help="PEM bundle: private key, leaf certificate, optional chain."),
     ] = None,
+    source_version: Annotated[
+        str | None,
+        Option("--source-version", help="Source version bound into the signature; required with --sign-bundle."),
+    ] = None,
 ) -> None:
     """Convert a model folder to MEGA artifacts."""
-    signing = _signing_config(sign_bundle, _default_model_id(model_dir))
+    signing = _signing_config(sign_bundle, _default_model_id(model_dir), source_version)
     result = convert_model(
         model_dir,
         output_dir,
@@ -55,18 +59,27 @@ def convert(
 def sign(
     artifact: Annotated[Path, Argument(help="MEGA shard or .mega.index.json.")],
     bundle: Annotated[Path, Option("--bundle", help="PEM bundle: private key, leaf certificate, optional chain.")],
+    source_version: Annotated[str, Option("--source-version", help="Source version bound into the signature.")],
 ) -> None:
     """Sign a MEGA artifact."""
-    signing = _signing_config(bundle, _default_model_id(artifact))
+    signing = _signing_config(bundle, _default_model_id(artifact), source_version)
     assert signing is not None
     paths = sign_artifact(artifact, signing)
     out.result("Artifact signed", artifact=artifact, shards=len(paths))
 
 
-def _signing_config(bundle: Path | None, model_id: str) -> SigningConfig | None:
+def _signing_config(
+    bundle: Path | None,
+    model_id: str,
+    source_version: str | None,
+) -> SigningConfig | None:
     if bundle is None:
         return None
-    return SigningConfig.from_pem_bundle(bundle.read_bytes(), model_id=model_id)
+    if not source_version:
+        raise ValueError("--sign-bundle requires --source-version")
+    return SigningConfig.from_pem_bundle(
+        bundle.read_bytes(), model_id=model_id, source_version=source_version
+    )
 
 
 def _default_model_id(path: Path) -> str:

@@ -127,6 +127,7 @@ static inline int munmap(void* addr, size_t /*length*/) {
 #include <set>
 #include <thread>
 #include <system_error>
+#include <condition_variable>
 #include <zstd.h>
 #ifdef MEGATENSORS_HAVE_ZLIB
 #include <zlib.h>
@@ -2580,45 +2581,219 @@ static void copy_raw_payload_fd(
     }
     validate_checksum_field(checksum_type, checksum, filename, "payload");
     uint8_t *dst = reinterpret_cast<uint8_t *>(dst_ptr);
-    constexpr uint64_t BUFFER_SIZE = 16ULL * 1024ULL * 1024ULL;
-    ossl_ptr<EVP_MD_CTX, EVP_MD_CTX_free> sha_ctx(nullptr, EVP_MD_CTX_free);
-    if (checksum_type == MEGA_CHECKSUM_SHA256) {
-        sha_ctx.reset(EVP_MD_CTX_new());
-        if (sha_ctx == nullptr || EVP_DigestInit_ex(sha_ctx.get(), EVP_sha256(), nullptr) != 1) {
-            throw std::runtime_error("OpenSSL EVP_DigestInit_ex(SHA256) failed");
+    constexpr uint64_t CHUNK_BYTES = 16ULL * 1024ULL * 1024ULL;
+    const size_t chunk_count = static_cast<size_t>(
+        (nbytes + CHUNK_BYTES - 1) / CHUNK_BYTES);
+
+    auto read_all = [&] {
+        uint64_t done = 0;
+        while (done < nbytes) {
+            const uint64_t step = std::min<uint64_t>(CHUNK_BYTES, nbytes - done);
+            read_exact_at(fd, file_offset + done, dst + done, step, filename);
+            done += step;
         }
+    };
+    auto verify_after_read = [&] {
+        read_all();
+        verify_raw_payload_ptr(
+            reinterpret_cast<uintptr_t>(dst), nbytes, checksum_type, checksum, ""
+        );
+    };
+
+    if (checksum_type == MEGA_CHECKSUM_NONE) {
+        read_all();
+        return;
     }
-    uint64_t done = 0;
-    while (done < nbytes) {
-        const uint64_t step64 = std::min<uint64_t>(BUFFER_SIZE, nbytes - done);
-        read_exact_at(fd, file_offset + done, dst + done, step64, filename);
-        if (checksum_type == MEGA_CHECKSUM_SHA256) {
-            if (EVP_DigestUpdate(sha_ctx.get(), dst + done, static_cast<size_t>(step64)) != 1) {
-                throw std::runtime_error("OpenSSL EVP_DigestUpdate(SHA256) failed");
-            }
-        }
-        done += step64;
-    }
+
     if (checksum_type == MEGA_CHECKSUM_CRC32) {
-#ifdef MEGATENSORS_HAVE_ZLIB
-        const uint32_t crc = crc32_parallel(dst, static_cast<size_t>(nbytes));
-#else
-        const uint32_t crc = crc32_update(0, dst, static_cast<size_t>(nbytes));
-#endif
-        const uint32_t expected = read_checksum_u32_le(checksum);
-        if (crc != expected) {
+        constexpr uint64_t MIN_SEGMENT_BYTES = 2ULL * 1024ULL * 1024ULL;
+        constexpr uint64_t MAX_SEGMENTS = 8;
+        unsigned workers = std::thread::hardware_concurrency();
+        if (workers == 0) {
+            workers = 1;
+        }
+        if (workers > MAX_SEGMENTS) {
+            workers = static_cast<unsigned>(MAX_SEGMENTS);
+        }
+        const uint64_t segments = std::min<uint64_t>(
+            static_cast<uint64_t>(workers), nbytes / MIN_SEGMENT_BYTES);
+        if (segments < 2) {
+            verify_after_read();
+            return;
+        }
+
+        // Segment boundaries are derived from the byte index so that every
+        // byte belongs to exactly one segment and the order is stable.
+        auto segment_begin = [&](uint64_t index) {
+            return nbytes * index / segments;
+        };
+        std::vector<uint32_t> partial(static_cast<size_t>(segments));
+        std::mutex mutex;
+        std::condition_variable ready_cv;
+        uint64_t ready_segments = 0;
+        bool reader_done = false;
+        std::exception_ptr read_error;
+
+        std::thread reader;
+        try {
+            reader = std::thread([&] {
+                try {
+                    for (uint64_t i = 0; i < segments; ++i) {
+                        const uint64_t begin = segment_begin(i);
+                        const uint64_t end = segment_begin(i + 1);
+                        read_exact_at(
+                            fd, file_offset + begin, dst + begin, end - begin, filename
+                        );
+                        {
+                            std::lock_guard<std::mutex> lock(mutex);
+                            ready_segments = i + 1;
+                        }
+                        ready_cv.notify_all();
+                    }
+                } catch (...) {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    read_error = std::current_exception();
+                }
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    reader_done = true;
+                }
+                ready_cv.notify_all();
+            });
+        } catch (const std::system_error &) {
+            verify_after_read();
+            return;
+        }
+
+        auto hash_segment = [&](uint64_t index) {
+            const uint64_t begin = segment_begin(index);
+            const uint64_t end = segment_begin(index + 1);
+            std::unique_lock<std::mutex> lock(mutex);
+            ready_cv.wait(lock, [&] { return ready_segments > index || reader_done; });
+            if (ready_segments <= index) {
+                return;
+            }
+            lock.unlock();
+            partial[static_cast<size_t>(index)] =
+                crc32_update(0, dst + begin, static_cast<size_t>(end - begin));
+        };
+
+        std::vector<std::thread> hashers;
+        hashers.reserve(static_cast<size_t>(segments - 1));
+        uint64_t next_segment = 1;
+        while (next_segment < segments) {
+            try {
+                hashers.emplace_back(hash_segment, next_segment);
+            } catch (const std::system_error &) {
+                break;
+            }
+            ++next_segment;
+        }
+        // The calling thread covers segment 0 and any segment whose worker
+        // could not be started.
+        for (uint64_t i = next_segment; i < segments; ++i) {
+            hash_segment(i);
+        }
+        hash_segment(0);
+
+        for (std::thread &thread : hashers) {
+            thread.join();
+        }
+        reader.join();
+        if (read_error) {
+            std::rethrow_exception(read_error);
+        }
+        uint32_t crc = partial[0];
+        for (uint64_t i = 1; i < segments; ++i) {
+            const uint64_t begin = segment_begin(i);
+            const uint64_t end = segment_begin(i + 1);
+            crc = static_cast<uint32_t>(crc32_combine(
+                static_cast<uLong>(crc),
+                static_cast<uLong>(partial[static_cast<size_t>(i)]),
+                static_cast<z_off_t>(end - begin)
+            ));
+        }
+        if (crc != read_checksum_u32_le(checksum)) {
             throw std::runtime_error(filename + ": tensor " + tensor_name + " payload checksum mismatch");
         }
-    } else if (checksum_type == MEGA_CHECKSUM_SHA256) {
-        std::array<uint8_t, SHA256_DIGEST_LENGTH> digest;
-        unsigned int digest_len = 0;
-        if (EVP_DigestFinal_ex(sha_ctx.get(), digest.data(), &digest_len) != 1 ||
-            digest_len != digest.size()) {
-            throw std::runtime_error("OpenSSL SHA256 digest finalization failed");
+        return;
+    }
+
+    if (chunk_count < 2) {
+        verify_after_read();
+        return;
+    }
+
+    ossl_ptr<EVP_MD_CTX, EVP_MD_CTX_free> sha_ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
+    if (sha_ctx == nullptr ||
+        EVP_DigestInit_ex(sha_ctx.get(), EVP_sha256(), nullptr) != 1) {
+        throw std::runtime_error("OpenSSL EVP_DigestInit_ex(SHA256) failed");
+    }
+
+    std::mutex mutex;
+    std::condition_variable ready_cv;
+    size_t completed = 0;
+    size_t consumed = 0;
+    bool reader_done = false;
+    std::exception_ptr read_error;
+    std::thread reader;
+    try {
+        reader = std::thread([&] {
+            try {
+                for (size_t i = 0; i < chunk_count; ++i) {
+                    const uint64_t begin = static_cast<uint64_t>(i) * CHUNK_BYTES;
+                    const uint64_t len = std::min<uint64_t>(CHUNK_BYTES, nbytes - begin);
+                    read_exact_at(fd, file_offset + begin, dst + begin, len, filename);
+                    {
+                        std::lock_guard<std::mutex> lock(mutex);
+                        completed = i + 1;
+                    }
+                    ready_cv.notify_all();
+                }
+            } catch (...) {
+                std::lock_guard<std::mutex> lock(mutex);
+                read_error = std::current_exception();
+            }
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                reader_done = true;
+            }
+            ready_cv.notify_all();
+        });
+    } catch (const std::system_error &) {
+        verify_after_read();
+        return;
+    }
+
+    for (;;) {
+        size_t index;
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            ready_cv.wait(lock, [&] { return consumed < completed || reader_done; });
+            if (consumed >= completed) {
+                break;
+            }
+            index = consumed++;
         }
-        if (!std::equal(digest.begin(), digest.end(), checksum.begin())) {
-            throw std::runtime_error(filename + ": tensor " + tensor_name + " payload checksum mismatch");
+        const uint64_t begin = static_cast<uint64_t>(index) * CHUNK_BYTES;
+        const uint64_t len = std::min<uint64_t>(CHUNK_BYTES, nbytes - begin);
+        if (EVP_DigestUpdate(sha_ctx.get(), dst + begin, static_cast<size_t>(len)) != 1) {
+            reader.join();
+            throw std::runtime_error("OpenSSL EVP_DigestUpdate(SHA256) failed");
         }
+    }
+    reader.join();
+    if (read_error) {
+        std::rethrow_exception(read_error);
+    }
+    std::array<uint8_t, SHA256_DIGEST_LENGTH> digest;
+    unsigned int digest_len = 0;
+    if (EVP_DigestFinal_ex(sha_ctx.get(), digest.data(), &digest_len) != 1 ||
+        digest_len != digest.size()) {
+        throw std::runtime_error("OpenSSL SHA256 digest finalization failed");
+    }
+    if (!std::equal(digest.begin(), digest.end(), checksum.begin())) {
+        throw std::runtime_error(filename + ": tensor " + tensor_name + " payload checksum mismatch");
     }
 }
 

@@ -2923,6 +2923,7 @@ static void copy_raw_payload_fd(
     }
 
     if (checksum_type == MEGA_CHECKSUM_CRC32) {
+#ifdef MEGATENSORS_HAVE_ZLIB
         const uint64_t segments = choose_segments();
         if (segments < 2) {
             verify_after_read();
@@ -2950,6 +2951,12 @@ static void copy_raw_payload_fd(
             throw std::runtime_error(filename + ": tensor " + tensor_name + " payload checksum mismatch");
         }
         return;
+#else
+        // Without a combine primitive the segments cannot be chained, so a
+        // single pass reads and hashes the payload.
+        verify_after_read();
+        return;
+#endif
     }
 
     if (chunk_count < 2) {

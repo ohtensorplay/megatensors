@@ -2577,12 +2577,49 @@ static void verify_raw_payload_ptr(
 // Fast path for uncompressed dense payloads: stream the stored bytes straight
 // into the destination tensor's memory and verify the checksum in the same
 // pass, so each payload byte is touched exactly once (no intermediate copy).
-// A dedicated reader thread fills the destination in order while hashing
-// runs concurrently. CRC32 has no serial dependency, so the payload is split
-// into contiguous segments that are hashed by separate threads as soon as
-// their bytes land; the partial CRCs are merged afterwards, which both
-// overlaps the device read and uses several cores. SHA256 chains its blocks,
-// so that checksum type only overlaps the read with one hashing thread.
+// Run one job per segment with one worker thread per segment plus the calling
+// thread. A job that throws is captured and rethrown once all workers finish.
+template <typename Job>
+static void run_segments(uint64_t segments, Job &&job) {
+    std::vector<std::exception_ptr> errors(static_cast<size_t>(segments));
+    auto run = [&](uint64_t index) {
+        try {
+            job(index);
+        } catch (...) {
+            errors[static_cast<size_t>(index)] = std::current_exception();
+        }
+    };
+    std::vector<std::thread> workers;
+    workers.reserve(static_cast<size_t>(segments - 1));
+    uint64_t next = 1;
+    while (next < segments) {
+        try {
+            workers.emplace_back(run, next);
+        } catch (const std::system_error &) {
+            break;
+        }
+        ++next;
+    }
+    for (uint64_t index = next; index < segments; ++index) {
+        run(index);
+    }
+    run(0);
+    for (std::thread &thread : workers) {
+        thread.join();
+    }
+    for (const std::exception_ptr &error : errors) {
+        if (error) {
+            std::rethrow_exception(error);
+        }
+    }
+}
+
+// Uncompressed dense payloads are streamed straight into the destination
+// tensor's memory. Large payloads are split into contiguous segments that are
+// read and hashed by separate worker threads, so device reads proceed in
+// parallel and each segment is hashed while the other segments are still
+// being read. SHA256 chains its blocks, so that checksum type keeps a single
+// reader thread and hashes chunks in order on the calling thread.
 static void copy_raw_payload_fd(
     int fd,
     const std::string &filename,
@@ -2622,13 +2659,7 @@ static void copy_raw_payload_fd(
             reinterpret_cast<uintptr_t>(dst), nbytes, checksum_type, checksum, ""
         );
     };
-
-    if (checksum_type == MEGA_CHECKSUM_NONE) {
-        read_all();
-        return;
-    }
-
-    if (checksum_type == MEGA_CHECKSUM_CRC32) {
+    auto choose_segments = [&]() -> uint64_t {
         constexpr uint64_t MIN_SEGMENT_BYTES = 2ULL * 1024ULL * 1024ULL;
         constexpr uint64_t MAX_SEGMENTS = 8;
         unsigned workers = std::thread::hardware_concurrency();
@@ -2638,98 +2669,42 @@ static void copy_raw_payload_fd(
         if (workers > MAX_SEGMENTS) {
             workers = static_cast<unsigned>(MAX_SEGMENTS);
         }
-        const uint64_t segments = std::min<uint64_t>(
+        return std::min<uint64_t>(
             static_cast<uint64_t>(workers), nbytes / MIN_SEGMENT_BYTES);
+    };
+
+    if (checksum_type == MEGA_CHECKSUM_NONE) {
+        const uint64_t segments = choose_segments();
+        if (segments < 2) {
+            read_all();
+            return;
+        }
+        run_segments(segments, [&](uint64_t index) {
+            const uint64_t begin = nbytes * index / segments;
+            const uint64_t end = nbytes * (index + 1) / segments;
+            read_exact_at(fd, file_offset + begin, dst + begin, end - begin, filename);
+        });
+        return;
+    }
+
+    if (checksum_type == MEGA_CHECKSUM_CRC32) {
+        const uint64_t segments = choose_segments();
         if (segments < 2) {
             verify_after_read();
             return;
         }
-
-        // Segment boundaries are derived from the byte index so that every
-        // byte belongs to exactly one segment and the order is stable.
-        auto segment_begin = [&](uint64_t index) {
-            return nbytes * index / segments;
-        };
         std::vector<uint32_t> partial(static_cast<size_t>(segments));
-        std::mutex mutex;
-        std::condition_variable ready_cv;
-        uint64_t ready_segments = 0;
-        bool reader_done = false;
-        std::exception_ptr read_error;
-
-        std::thread reader;
-        try {
-            reader = std::thread([&] {
-                try {
-                    for (uint64_t i = 0; i < segments; ++i) {
-                        const uint64_t begin = segment_begin(i);
-                        const uint64_t end = segment_begin(i + 1);
-                        read_exact_at(
-                            fd, file_offset + begin, dst + begin, end - begin, filename
-                        );
-                        {
-                            std::lock_guard<std::mutex> lock(mutex);
-                            ready_segments = i + 1;
-                        }
-                        ready_cv.notify_all();
-                    }
-                } catch (...) {
-                    std::lock_guard<std::mutex> lock(mutex);
-                    read_error = std::current_exception();
-                }
-                {
-                    std::lock_guard<std::mutex> lock(mutex);
-                    reader_done = true;
-                }
-                ready_cv.notify_all();
-            });
-        } catch (const std::system_error &) {
-            verify_after_read();
-            return;
-        }
-
-        auto hash_segment = [&](uint64_t index) {
-            const uint64_t begin = segment_begin(index);
-            const uint64_t end = segment_begin(index + 1);
-            std::unique_lock<std::mutex> lock(mutex);
-            ready_cv.wait(lock, [&] { return ready_segments > index || reader_done; });
-            if (ready_segments <= index) {
-                return;
-            }
-            lock.unlock();
+        run_segments(segments, [&](uint64_t index) {
+            const uint64_t begin = nbytes * index / segments;
+            const uint64_t end = nbytes * (index + 1) / segments;
+            read_exact_at(fd, file_offset + begin, dst + begin, end - begin, filename);
             partial[static_cast<size_t>(index)] =
                 crc32_update(0, dst + begin, static_cast<size_t>(end - begin));
-        };
-
-        std::vector<std::thread> hashers;
-        hashers.reserve(static_cast<size_t>(segments - 1));
-        uint64_t next_segment = 1;
-        while (next_segment < segments) {
-            try {
-                hashers.emplace_back(hash_segment, next_segment);
-            } catch (const std::system_error &) {
-                break;
-            }
-            ++next_segment;
-        }
-        // The calling thread covers segment 0 and any segment whose worker
-        // could not be started.
-        for (uint64_t i = next_segment; i < segments; ++i) {
-            hash_segment(i);
-        }
-        hash_segment(0);
-
-        for (std::thread &thread : hashers) {
-            thread.join();
-        }
-        reader.join();
-        if (read_error) {
-            std::rethrow_exception(read_error);
-        }
+        });
         uint32_t crc = partial[0];
         for (uint64_t i = 1; i < segments; ++i) {
-            const uint64_t begin = segment_begin(i);
-            const uint64_t end = segment_begin(i + 1);
+            const uint64_t begin = nbytes * i / segments;
+            const uint64_t end = nbytes * (i + 1) / segments;
             crc = static_cast<uint32_t>(crc32_combine(
                 static_cast<uLong>(crc),
                 static_cast<uLong>(partial[static_cast<size_t>(i)]),

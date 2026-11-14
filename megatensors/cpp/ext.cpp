@@ -2429,13 +2429,13 @@ static void copy_decoded_payload_to_dst(uintptr_t dst_ptr, bool dst_is_cuda, con
 // Hash large buffers in independent blocks on multiple threads and merge the
 // partial CRCs in order. The combined value equals a single-pass crc32().
 static uint32_t crc32_parallel(const uint8_t *data, size_t size) {
-    constexpr size_t CHUNK_BYTES = 16ULL * 1024ULL * 1024ULL;
+    constexpr size_t CHUNK_BYTES = 4ULL * 1024ULL * 1024ULL;
     constexpr unsigned MAX_WORKERS = 8;
     unsigned workers = std::thread::hardware_concurrency();
     if (workers > MAX_WORKERS) {
         workers = MAX_WORKERS;
     }
-    if (size < 2 * CHUNK_BYTES || workers < 2) {
+    if (size <= 2 * CHUNK_BYTES || workers < 2) {
         return crc32_update(0, data, size);
     }
     const size_t chunks = (size + CHUNK_BYTES - 1) / CHUNK_BYTES;
@@ -2477,6 +2477,88 @@ static uint32_t crc32_parallel(const uint8_t *data, size_t size) {
 }
 #endif
 
+static void verify_raw_payload_ptr(
+    uintptr_t addr,
+    uint64_t nbytes,
+    uint32_t checksum_type,
+    const std::array<uint8_t, 32> &checksum,
+    const std::string &expected_hex
+) {
+    if (nbytes == 0 || checksum_type == MEGA_CHECKSUM_NONE) {
+        return;
+    }
+    if (nbytes > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+        throw std::runtime_error("MEGA payload is too large for this platform");
+    }
+    const uint8_t *data = reinterpret_cast<const uint8_t *>(addr);
+    if (checksum_type == MEGA_CHECKSUM_CRC32) {
+#ifdef MEGATENSORS_HAVE_ZLIB
+        const uint32_t actual = crc32_parallel(data, static_cast<size_t>(nbytes));
+#else
+        const uint32_t actual = crc32_update(0, data, static_cast<size_t>(nbytes));
+#endif
+        if (!expected_hex.empty()) {
+            char formatted[9];
+            std::snprintf(formatted, sizeof(formatted), "%08x", actual);
+            if (expected_hex != formatted) {
+                throw std::runtime_error("MEGA payload checksum mismatch");
+            }
+            return;
+        }
+        if (checksum_tail_is_zero(checksum, 0)) {
+            return;
+        }
+        if (actual != read_checksum_u32_le(checksum)) {
+            throw std::runtime_error("MEGA payload checksum mismatch");
+        }
+        return;
+    }
+    if (checksum_type == MEGA_CHECKSUM_SHA256) {
+        ossl_ptr<EVP_MD_CTX, EVP_MD_CTX_free> sha_ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
+        if (sha_ctx == nullptr ||
+            EVP_DigestInit_ex(sha_ctx.get(), EVP_sha256(), nullptr) != 1 ||
+            EVP_DigestUpdate(sha_ctx.get(), data, static_cast<size_t>(nbytes)) != 1) {
+            throw std::runtime_error("OpenSSL SHA256 hashing failed");
+        }
+        std::array<uint8_t, SHA256_DIGEST_LENGTH> digest;
+        unsigned int digest_len = 0;
+        if (EVP_DigestFinal_ex(sha_ctx.get(), digest.data(), &digest_len) != 1 ||
+            digest_len != digest.size()) {
+            throw std::runtime_error("OpenSSL SHA256 digest finalization failed");
+        }
+        if (!expected_hex.empty()) {
+            static const char digits[] = "0123456789abcdef";
+            std::string formatted;
+            formatted.reserve(digest.size() * 2);
+            for (uint8_t byte : digest) {
+                formatted.push_back(digits[byte >> 4]);
+                formatted.push_back(digits[byte & 0x0F]);
+            }
+            if (expected_hex != formatted) {
+                throw std::runtime_error("MEGA payload checksum mismatch");
+            }
+            return;
+        }
+        if (checksum_tail_is_zero(checksum, 0)) {
+            return;
+        }
+        if (!std::equal(digest.begin(), digest.end(), checksum.begin())) {
+            throw std::runtime_error("MEGA payload checksum mismatch");
+        }
+        return;
+    }
+    throw std::runtime_error("MEGA payload has an unknown checksum type");
+}
+
+// Fast path for uncompressed dense payloads: stream the stored bytes straight
+// into the destination tensor's memory and verify the checksum in the same
+// pass, so each payload byte is touched exactly once (no intermediate copy).
+// A dedicated reader thread fills the destination in order while hashing
+// runs concurrently. CRC32 has no serial dependency, so the payload is split
+// into contiguous segments that are hashed by separate threads as soon as
+// their bytes land; the partial CRCs are merged afterwards, which both
+// overlaps the device read and uses several cores. SHA256 chains its blocks,
+// so that checksum type only overlaps the read with one hashing thread.
 static void copy_raw_payload_fd(
     int fd,
     const std::string &filename,
@@ -3778,6 +3860,34 @@ PYBIND11_MODULE(__MOD_NAME__, m)
                 checksum,
                 dst_ptr
             );
+        }
+    );
+    m.def(
+        "verify_buffer_payload",
+        [](pybind11::buffer source,
+           uint64_t offset,
+           uint64_t nbytes,
+           uint32_t checksum_type,
+           pybind11::bytes py_checksum,
+           const std::string &expected_hex) {
+            const std::string checksum_bytes = py_checksum;
+            if (checksum_bytes.size() != 32) {
+                throw std::runtime_error("MEGA tensor checksum field must be 32 bytes");
+            }
+            std::array<uint8_t, 32> checksum;
+            std::memcpy(checksum.data(), checksum_bytes.data(), checksum.size());
+            pybind11::buffer_info info = source.request();
+            const uint64_t total = static_cast<uint64_t>(info.size) *
+                                   static_cast<uint64_t>(info.itemsize);
+            if (offset > total || nbytes > total - offset) {
+                throw std::runtime_error("MEGA checksum buffer range is out of bounds");
+            }
+            const uintptr_t addr =
+                reinterpret_cast<uintptr_t>(info.ptr) + offset;
+            {
+                pybind11::gil_scoped_release release;
+                verify_raw_payload_ptr(addr, nbytes, checksum_type, checksum, expected_hex);
+            }
         }
     );
     m.def(

@@ -1153,6 +1153,29 @@ static std::vector<uint8_t> decompress_zstd(const std::vector<uint8_t> &payload,
     return decoded;
 }
 
+static void decompress_zstd_to(
+    const std::vector<uint8_t> &payload,
+    uint8_t *dst,
+    uint64_t logical_nbytes
+) {
+    static thread_local std::unique_ptr<ZSTD_DCtx, decltype(&ZSTD_freeDCtx)> context(
+        ZSTD_createDCtx(), ZSTD_freeDCtx);
+    if (context == nullptr) {
+        throw std::runtime_error("MEGA ZSTD decompression context allocation failed");
+    }
+    const size_t rc = ZSTD_decompressDCtx(
+        context.get(),
+        dst,
+        static_cast<size_t>(logical_nbytes),
+        payload.data(),
+        payload.size()
+    );
+    if (ZSTD_isError(rc) || rc != static_cast<size_t>(logical_nbytes)) {
+        const char *err = ZSTD_isError(rc) ? ZSTD_getErrorName(rc) : "decoded length mismatch";
+        throw std::runtime_error(std::string("MEGA ZSTD payload decompression failed: ") + err);
+    }
+}
+
 static std::vector<uint8_t> decompress_payload(uint32_t codec, const std::vector<uint8_t> &payload, uint64_t logical_nbytes) {
     switch (codec) {
         case MEGA_COMPRESSION_NONE:
@@ -2862,6 +2885,23 @@ static void decode_payload_fd(
     uintptr_t dst_ptr,
     bool dst_is_cuda
 ) {
+    if (compression_codec == MEGA_COMPRESSION_ZSTD &&
+        tensor_flags == MEGA_TENSOR_FLAG_COMPRESSED &&
+        !dst_is_cuda && dst_ptr != 0 &&
+        stored_nbytes <= static_cast<uint64_t>(std::numeric_limits<size_t>::max()) &&
+        logical_nbytes <= static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+        std::vector<uint8_t> payload(static_cast<size_t>(stored_nbytes));
+        read_exact_at(fd, file_offset, payload.data(), stored_nbytes, filename);
+        verify_stored_payload_checksum(
+            payload, checksum_type, checksum, filename, tensor_name, "payload"
+        );
+        decompress_zstd_to(
+            payload,
+            reinterpret_cast<uint8_t *>(dst_ptr),
+            logical_nbytes
+        );
+        return;
+    }
     std::vector<uint8_t> payload = read_decode_payload(
         fd,
         filename,

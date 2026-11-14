@@ -8,6 +8,7 @@ find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
 find_package(pybind11 CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_library(ZSTD_LIBRARY REQUIRED NAMES zstd)
+find_package(ZLIB QUIET)
 
 set(MEGATENSORS_CPP_SOURCES
     megatensors/cpp/ext.cpp
@@ -22,6 +23,10 @@ target_compile_features(cpp PRIVATE cxx_std_17)
 target_compile_definitions(cpp PRIVATE __MOD_NAME__=cpp)
 target_include_directories(cpp PRIVATE megatensors/cpp)
 target_link_libraries(cpp PRIVATE OpenSSL::Crypto ${ZSTD_LIBRARY})
+if(ZLIB_FOUND)
+    target_link_libraries(cpp PRIVATE ZLIB::ZLIB)
+    target_compile_definitions(cpp PRIVATE MEGATENSORS_HAVE_ZLIB=1)
+endif()
 
 set_property(TARGET cpp PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

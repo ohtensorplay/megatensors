@@ -126,6 +126,9 @@ static inline int munmap(void* addr, size_t /*length*/) {
 #include <limits>
 #include <set>
 #include <zstd.h>
+#ifdef MEGATENSORS_HAVE_ZLIB
+#include <zlib.h>
+#endif
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
@@ -1196,11 +1199,11 @@ static uint32_t read_checksum_u32_le(const std::array<uint8_t, 32> &checksum) {
 
 static std::string openssl_error_string();
 
-// IEEE CRC-32 (reflected polynomial 0xEDB88320) computed with the
-// slicing-by-8 technique: eight input bytes are consumed per iteration using
-// independent table lookups, breaking the serial dependency chain of the
-// bit-wise algorithm so the compiler can keep multiple loads in flight.
-// The produced values are identical to zlib's crc32().
+// IEEE CRC-32 (reflected polynomial 0xEDB88320). When zlib is available its
+// optimized implementation is used; the table-driven slicing-by-8 fallback
+// consumes eight input bytes per iteration with independent lookups. Both
+// produce values identical to zlib's crc32().
+#ifndef MEGATENSORS_HAVE_ZLIB
 namespace {
 
 struct Crc32SlicingTables {
@@ -1230,8 +1233,20 @@ const Crc32SlicingTables& crc32_tables() {
 }
 
 } // namespace
+#endif
 
 static uint32_t crc32_update(uint32_t crc, const uint8_t *data, size_t size) {
+#ifdef MEGATENSORS_HAVE_ZLIB
+    uLong value = static_cast<uLong>(crc);
+    while (size > 0) {
+        const uInt step = static_cast<uInt>(
+            std::min<size_t>(size, static_cast<size_t>(1) << 30));
+        value = crc32(value, data, step);
+        data += step;
+        size -= step;
+    }
+    return static_cast<uint32_t>(value);
+#else
     const Crc32SlicingTables& tbl = crc32_tables();
     crc = ~crc;
     while (size >= 8) {
@@ -1254,6 +1269,7 @@ static uint32_t crc32_update(uint32_t crc, const uint8_t *data, size_t size) {
         --size;
     }
     return ~crc;
+#endif
 }
 
 static uint32_t crc32_bytes(const std::vector<uint8_t> &payload) {

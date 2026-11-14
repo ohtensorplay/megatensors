@@ -1196,21 +1196,62 @@ static uint32_t read_checksum_u32_le(const std::array<uint8_t, 32> &checksum) {
 
 static std::string openssl_error_string();
 
-static uint32_t crc32_update(uint32_t crc, const uint8_t *data, size_t size) {
-    static const std::array<uint32_t, 256> table = [] {
-        std::array<uint32_t, 256> out{};
-        for (uint32_t i = 0; i < out.size(); ++i) {
+// IEEE CRC-32 (reflected polynomial 0xEDB88320) computed with the
+// slicing-by-8 technique: eight input bytes are consumed per iteration using
+// independent table lookups, breaking the serial dependency chain of the
+// bit-wise algorithm so the compiler can keep multiple loads in flight.
+// The produced values are identical to zlib's crc32().
+namespace {
+
+struct Crc32SlicingTables {
+    uint32_t t[8][256];
+
+    Crc32SlicingTables() {
+        for (uint32_t i = 0; i < 256; ++i) {
             uint32_t c = i;
             for (int bit = 0; bit < 8; ++bit) {
                 c = (c & 1U) ? (0xEDB88320U ^ (c >> 1U)) : (c >> 1U);
             }
-            out[i] = c;
+            t[0][i] = c;
         }
-        return out;
-    }();
+        for (uint32_t i = 0; i < 256; ++i) {
+            uint32_t c = t[0][i];
+            for (int k = 1; k < 8; ++k) {
+                c = t[0][c & 0xFFU] ^ (c >> 8U);
+                t[k][i] = c;
+            }
+        }
+    }
+};
+
+const Crc32SlicingTables& crc32_tables() {
+    static const Crc32SlicingTables tables;
+    return tables;
+}
+
+} // namespace
+
+static uint32_t crc32_update(uint32_t crc, const uint8_t *data, size_t size) {
+    const Crc32SlicingTables& tbl = crc32_tables();
     crc = ~crc;
-    for (size_t i = 0; i < size; ++i) {
-        crc = table[(crc ^ data[i]) & 0xFFU] ^ (crc >> 8U);
+    while (size >= 8) {
+        const uint32_t c0 = data[0] ^ (crc & 0xFFU);
+        const uint32_t c1 = data[1] ^ ((crc >> 8) & 0xFFU);
+        const uint32_t c2 = data[2] ^ ((crc >> 16) & 0xFFU);
+        const uint32_t c3 = data[3] ^ ((crc >> 24) & 0xFFU);
+        const uint32_t c4 = data[4];
+        const uint32_t c5 = data[5];
+        const uint32_t c6 = data[6];
+        const uint32_t c7 = data[7];
+        crc = tbl.t[7][c0] ^ tbl.t[6][c1] ^ tbl.t[5][c2] ^ tbl.t[4][c3] ^
+              tbl.t[3][c4] ^ tbl.t[2][c5] ^ tbl.t[1][c6] ^ tbl.t[0][c7];
+        data += 8;
+        size -= 8;
+    }
+    while (size > 0) {
+        crc = tbl.t[0][(crc ^ *data) & 0xFFU] ^ (crc >> 8U);
+        ++data;
+        --size;
     }
     return ~crc;
 }

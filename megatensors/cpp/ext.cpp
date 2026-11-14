@@ -3338,6 +3338,30 @@ static void decode_chunks_fd(
     bool dst_is_cuda
 ) {
     validate_chunk_records(chunks, logical_nbytes, shuffle_elem_size, filename, tensor_name);
+    if (!dst_is_cuda) {
+        std::vector<mega_decode_task> tasks;
+        tasks.reserve(chunks.size());
+        for (const auto &chunk : chunks) {
+            if (chunk.logical_offset > UINTPTR_MAX - dst_ptr) {
+                throw std::runtime_error(filename + ": tensor " + tensor_name + " destination pointer overflows");
+            }
+            mega_decode_task task;
+            task.tensor_name = tensor_name;
+            task.file_offset = header_length + chunk.payload_offset;
+            task.stored_nbytes = chunk.stored_size;
+            task.logical_nbytes = chunk.logical_size;
+            task.tensor_flags = chunk.flags;
+            task.compression_codec = chunk.codec;
+            task.shuffle_elem_size = shuffle_elem_size;
+            task.checksum_type = chunk.checksum_type;
+            task.checksum = chunk.checksum;
+            task.dst_ptr = dst_ptr;
+            task.dst_offset = chunk.logical_offset;
+            tasks.push_back(task);
+        }
+        decode_payloads_fd(fd, filename, tasks);
+        return;
+    }
     for (const auto &chunk : chunks) {
         std::vector<uint8_t> payload = read_decode_payload(
             fd,

@@ -125,6 +125,8 @@ static inline int munmap(void* addr, size_t /*length*/) {
 #include <vector>
 #include <limits>
 #include <set>
+#include <thread>
+#include <system_error>
 #include <zstd.h>
 #ifdef MEGATENSORS_HAVE_ZLIB
 #include <zlib.h>
@@ -2423,6 +2425,58 @@ static void copy_decoded_payload_to_dst(uintptr_t dst_ptr, bool dst_is_cuda, con
 // Fast path for uncompressed dense payloads: stream the stored bytes straight
 // into the destination tensor's memory and verify the checksum in the same
 // pass, so each payload byte is touched exactly once (no intermediate copy).
+#ifdef MEGATENSORS_HAVE_ZLIB
+// Hash large buffers in independent blocks on multiple threads and merge the
+// partial CRCs in order. The combined value equals a single-pass crc32().
+static uint32_t crc32_parallel(const uint8_t *data, size_t size) {
+    constexpr size_t CHUNK_BYTES = 16ULL * 1024ULL * 1024ULL;
+    constexpr unsigned MAX_WORKERS = 8;
+    unsigned workers = std::thread::hardware_concurrency();
+    if (workers > MAX_WORKERS) {
+        workers = MAX_WORKERS;
+    }
+    if (size < 2 * CHUNK_BYTES || workers < 2) {
+        return crc32_update(0, data, size);
+    }
+    const size_t chunks = (size + CHUNK_BYTES - 1) / CHUNK_BYTES;
+    if (workers > chunks) {
+        workers = static_cast<unsigned>(chunks);
+    }
+    std::vector<uint32_t> partial(chunks);
+    auto hash_worker = [&partial, data, size, chunks, workers, CHUNK_BYTES](unsigned worker) {
+        for (size_t i = worker; i < chunks; i += workers) {
+            const size_t begin = i * CHUNK_BYTES;
+            const size_t len = std::min(CHUNK_BYTES, size - begin);
+            partial[i] = crc32_update(0, data + begin, len);
+        }
+    };
+    std::vector<std::thread> threads;
+    threads.reserve(workers - 1);
+    for (unsigned worker = 1; worker < workers; ++worker) {
+        try {
+            threads.emplace_back(hash_worker, worker);
+        } catch (const std::system_error &) {
+            hash_worker(worker);
+        }
+    }
+    hash_worker(0);
+    for (std::thread &thread : threads) {
+        thread.join();
+    }
+    uint32_t value = partial[0];
+    for (size_t i = 1; i < chunks; ++i) {
+        const size_t begin = i * CHUNK_BYTES;
+        const size_t len = std::min(CHUNK_BYTES, size - begin);
+        value = static_cast<uint32_t>(crc32_combine(
+            static_cast<uLong>(value),
+            static_cast<uLong>(partial[i]),
+            static_cast<z_off_t>(len)
+        ));
+    }
+    return value;
+}
+#endif
+
 static void copy_raw_payload_fd(
     int fd,
     const std::string &filename,
@@ -2439,10 +2493,12 @@ static void copy_raw_payload_fd(
     if (dst_ptr == 0) {
         throw std::runtime_error("MEGA raw payload destination pointer is null");
     }
+    if (nbytes > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+        throw std::runtime_error(filename + ": tensor " + tensor_name + " payload is too large for this platform");
+    }
     validate_checksum_field(checksum_type, checksum, filename, "payload");
     uint8_t *dst = reinterpret_cast<uint8_t *>(dst_ptr);
     constexpr uint64_t BUFFER_SIZE = 16ULL * 1024ULL * 1024ULL;
-    uint32_t crc = 0;
     ossl_ptr<EVP_MD_CTX, EVP_MD_CTX_free> sha_ctx(nullptr, EVP_MD_CTX_free);
     if (checksum_type == MEGA_CHECKSUM_SHA256) {
         sha_ctx.reset(EVP_MD_CTX_new());
@@ -2454,9 +2510,7 @@ static void copy_raw_payload_fd(
     while (done < nbytes) {
         const uint64_t step64 = std::min<uint64_t>(BUFFER_SIZE, nbytes - done);
         read_exact_at(fd, file_offset + done, dst + done, step64, filename);
-        if (checksum_type == MEGA_CHECKSUM_CRC32) {
-            crc = crc32_update(crc, dst + done, static_cast<size_t>(step64));
-        } else if (checksum_type == MEGA_CHECKSUM_SHA256) {
+        if (checksum_type == MEGA_CHECKSUM_SHA256) {
             if (EVP_DigestUpdate(sha_ctx.get(), dst + done, static_cast<size_t>(step64)) != 1) {
                 throw std::runtime_error("OpenSSL EVP_DigestUpdate(SHA256) failed");
             }
@@ -2464,6 +2518,11 @@ static void copy_raw_payload_fd(
         done += step64;
     }
     if (checksum_type == MEGA_CHECKSUM_CRC32) {
+#ifdef MEGATENSORS_HAVE_ZLIB
+        const uint32_t crc = crc32_parallel(dst, static_cast<size_t>(nbytes));
+#else
+        const uint32_t crc = crc32_update(0, dst, static_cast<size_t>(nbytes));
+#endif
         const uint32_t expected = read_checksum_u32_le(checksum);
         if (crc != expected) {
             throw std::runtime_error(filename + ": tensor " + tensor_name + " payload checksum mismatch");

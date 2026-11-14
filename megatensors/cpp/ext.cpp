@@ -2404,6 +2404,67 @@ static void copy_decoded_payload_to_dst(uintptr_t dst_ptr, bool dst_is_cuda, con
     }
 }
 
+// Fast path for uncompressed dense payloads: stream the stored bytes straight
+// into the destination tensor's memory and verify the checksum in the same
+// pass, so each payload byte is touched exactly once (no intermediate copy).
+static void copy_raw_payload_fd(
+    int fd,
+    const std::string &filename,
+    const std::string &tensor_name,
+    uint64_t file_offset,
+    uint64_t nbytes,
+    uint32_t checksum_type,
+    const std::array<uint8_t, 32> &checksum,
+    uintptr_t dst_ptr
+) {
+    if (nbytes == 0) {
+        return;
+    }
+    if (dst_ptr == 0) {
+        throw std::runtime_error("MEGA raw payload destination pointer is null");
+    }
+    validate_checksum_field(checksum_type, checksum, filename, "payload");
+    uint8_t *dst = reinterpret_cast<uint8_t *>(dst_ptr);
+    constexpr uint64_t BUFFER_SIZE = 16ULL * 1024ULL * 1024ULL;
+    uint32_t crc = 0;
+    ossl_ptr<EVP_MD_CTX, EVP_MD_CTX_free> sha_ctx(nullptr, EVP_MD_CTX_free);
+    if (checksum_type == MEGA_CHECKSUM_SHA256) {
+        sha_ctx.reset(EVP_MD_CTX_new());
+        if (sha_ctx == nullptr || EVP_DigestInit_ex(sha_ctx.get(), EVP_sha256(), nullptr) != 1) {
+            throw std::runtime_error("OpenSSL EVP_DigestInit_ex(SHA256) failed");
+        }
+    }
+    uint64_t done = 0;
+    while (done < nbytes) {
+        const uint64_t step64 = std::min<uint64_t>(BUFFER_SIZE, nbytes - done);
+        read_exact_at(fd, file_offset + done, dst + done, step64, filename);
+        if (checksum_type == MEGA_CHECKSUM_CRC32) {
+            crc = crc32_update(crc, dst + done, static_cast<size_t>(step64));
+        } else if (checksum_type == MEGA_CHECKSUM_SHA256) {
+            if (EVP_DigestUpdate(sha_ctx.get(), dst + done, static_cast<size_t>(step64)) != 1) {
+                throw std::runtime_error("OpenSSL EVP_DigestUpdate(SHA256) failed");
+            }
+        }
+        done += step64;
+    }
+    if (checksum_type == MEGA_CHECKSUM_CRC32) {
+        const uint32_t expected = read_checksum_u32_le(checksum);
+        if (crc != expected) {
+            throw std::runtime_error(filename + ": tensor " + tensor_name + " payload checksum mismatch");
+        }
+    } else if (checksum_type == MEGA_CHECKSUM_SHA256) {
+        std::array<uint8_t, SHA256_DIGEST_LENGTH> digest;
+        unsigned int digest_len = 0;
+        if (EVP_DigestFinal_ex(sha_ctx.get(), digest.data(), &digest_len) != 1 ||
+            digest_len != digest.size()) {
+            throw std::runtime_error("OpenSSL SHA256 digest finalization failed");
+        }
+        if (!std::equal(digest.begin(), digest.end(), checksum.begin())) {
+            throw std::runtime_error(filename + ": tensor " + tensor_name + " payload checksum mismatch");
+        }
+    }
+}
+
 static std::vector<uint8_t> read_decode_payload(
     int fd,
     const std::string &filename,
@@ -3612,6 +3673,35 @@ PYBIND11_MODULE(__MOD_NAME__, m)
                 checksum,
                 dst_ptr,
                 dst_is_cuda
+            );
+        }
+    );
+    m.def(
+        "copy_raw_payload_fd",
+        [](int fd,
+           const std::string &filename,
+           const std::string &tensor_name,
+           uint64_t file_offset,
+           uint64_t nbytes,
+           uint32_t checksum_type,
+           pybind11::bytes py_checksum,
+           uintptr_t dst_ptr) {
+            const std::string checksum_bytes = py_checksum;
+            if (checksum_bytes.size() != 32) {
+                throw std::runtime_error("MEGA tensor checksum field must be 32 bytes");
+            }
+            std::array<uint8_t, 32> checksum;
+            std::memcpy(checksum.data(), checksum_bytes.data(), checksum.size());
+            pybind11::gil_scoped_release release;
+            copy_raw_payload_fd(
+                fd,
+                filename,
+                tensor_name,
+                file_offset,
+                nbytes,
+                checksum_type,
+                checksum,
+                dst_ptr
             );
         }
     );

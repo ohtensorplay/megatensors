@@ -118,6 +118,7 @@ static inline int munmap(void* addr, size_t /*length*/) {
 #include <cstdlib>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <memory>
 #include <string>
 #include <stdexcept>
@@ -2000,6 +2001,19 @@ static void verify_stored_payload_checksum(
     }
 }
 
+static void validate_chunk_records(
+    const std::vector<mega_chunk_record> &chunks,
+    uint64_t logical_nbytes,
+    uint32_t shuffle_elem_size,
+    const std::string &filename,
+    const std::string &tensor_name
+);
+
+struct mega_file_chunk_source {
+    mega_chunk_record header;
+    uint64_t src_offset;
+};
+
 struct mega_file_tensor_source {
     std::string name;
     std::string dtype;
@@ -2015,6 +2029,7 @@ struct mega_file_tensor_source {
     std::array<uint8_t, 32> checksum;
     std::string src_filename;
     uint64_t src_offset;
+    std::vector<mega_file_chunk_source> chunks;
 };
 
 static void copy_fd_range_buffered(
@@ -2087,6 +2102,18 @@ static void copy_fd_range(
     copy_fd_range_buffered(src_fd, dst_fd, src_offset, length, filename);
 }
 
+static void truncate_fd(int fd, uint64_t size, const std::string &filename) {
+#ifdef _MSC_VER
+    if (_chsize_s(fd, static_cast<__int64>(size)) != 0) {
+        throw std::runtime_error(filename + ": failed to truncate encoded payload file");
+    }
+#else
+    if (ftruncate(fd, static_cast<off_t>(size)) != 0) {
+        throw std::runtime_error(filename + ": failed to truncate encoded payload file");
+    }
+#endif
+}
+
 static pybind11::list encode_file_tensors(
     const std::string &payload_filename,
     pybind11::list tensors,
@@ -2156,18 +2183,93 @@ static pybind11::list encode_file_tensors(
                     }
                     it = src_fds.emplace(rec.src_filename, src_fd).first;
                 }
+                const bool try_compress = compression_codec != MEGA_COMPRESSION_NONE && rec.logical_nbytes > 0;
+                const uint32_t selected_codec = compression_codec == MEGA_COMPRESSION_AUTO
+                    ? MEGA_COMPRESSION_ZSTD
+                    : compression_codec;
+                // Large compressed tensors are written as independent frames so
+                // that readers can decompress unrelated byte ranges in parallel
+                // instead of waiting on one sequential frame per tensor.
+                constexpr uint64_t CHUNK_TARGET_BYTES = 4ULL * 1024ULL * 1024ULL;
+                constexpr uint64_t CHUNK_MIN_TENSOR_BYTES = 8ULL * 1024ULL * 1024ULL;
+                if (try_compress && rec.logical_nbytes >= CHUNK_MIN_TENSOR_BYTES) {
+                    const uint64_t chunk_count =
+                        (rec.logical_nbytes + CHUNK_TARGET_BYTES - 1) / CHUNK_TARGET_BYTES;
+                    const uint64_t chunk_bytes = (rec.logical_nbytes + chunk_count - 1) / chunk_count;
+                    const uint64_t start_offset = payload_offset;
+                    std::vector<uint8_t> chunk_raw(static_cast<size_t>(
+                        std::min<uint64_t>(chunk_bytes, rec.logical_nbytes)));
+                    std::vector<mega_file_chunk_source> chunks;
+                    uint64_t offset = 0;
+                    while (offset < rec.logical_nbytes) {
+                        const uint64_t size = std::min<uint64_t>(chunk_bytes, rec.logical_nbytes - offset);
+                        chunk_raw.resize(static_cast<size_t>(size));
+                        read_exact_at(it->second, rec.src_offset + offset, chunk_raw.data(), size, rec.src_filename);
+                        std::vector<uint8_t> encoded =
+                            compress_payload(selected_codec, chunk_raw, compression_level);
+                        const bool chunk_compressed = encoded.size() < chunk_raw.size();
+                        const std::vector<uint8_t> &chunk_payload = chunk_compressed ? encoded : chunk_raw;
+
+                        mega_file_chunk_source chunk;
+                        chunk.header.tensor_id = 0;
+                        chunk.header.chunk_id = static_cast<uint32_t>(chunks.size());
+                        chunk.header.logical_offset = offset;
+                        chunk.header.logical_size = size;
+                        chunk.header.payload_offset = payload_offset;
+                        chunk.header.stored_size = static_cast<uint64_t>(chunk_payload.size());
+                        chunk.header.codec = chunk_compressed ? selected_codec : MEGA_COMPRESSION_NONE;
+                        chunk.header.flags = chunk_compressed ? MEGA_TENSOR_FLAG_COMPRESSED : 0;
+                        chunk.header.checksum_type = MEGA_CHECKSUM_NONE;
+                        chunk.header.checksum.fill(0);
+                        chunk.src_offset = payload_offset;
+                        write_all_fd(dst_fd, chunk_payload, payload_filename);
+                        payload_offset += chunk.header.stored_size;
+                        chunks.push_back(chunk);
+                        offset += size;
+                    }
+                    const uint64_t encoded_total = payload_offset - start_offset;
+                    const bool keep_chunks =
+                        compression_codec != MEGA_COMPRESSION_AUTO ||
+                        (encoded_total < rec.logical_nbytes &&
+                         static_cast<double>(encoded_total) / static_cast<double>(rec.logical_nbytes) <= min_ratio);
+                    if (!keep_chunks) {
+                        truncate_fd(dst_fd, start_offset, payload_filename);
+                        if (lseek(dst_fd, static_cast<off_t>(start_offset), SEEK_SET) < 0) {
+                            throw std::runtime_error(payload_filename + ": failed to seek after truncating encoded payload file");
+                        }
+                        payload_offset = start_offset;
+                        rec.payload_offset = payload_offset;
+                        rec.stored_nbytes = rec.logical_nbytes;
+                        rec.tensor_flags = 0;
+                        rec.compression_codec = MEGA_COMPRESSION_NONE;
+                        const uint64_t read_step = std::min<uint64_t>(chunk_bytes, rec.logical_nbytes);
+                        std::vector<uint8_t> buffer(static_cast<size_t>(read_step));
+                        uint64_t done = 0;
+                        while (done < rec.logical_nbytes) {
+                            const uint64_t step = std::min<uint64_t>(read_step, rec.logical_nbytes - done);
+                            buffer.resize(static_cast<size_t>(step));
+                            read_exact_at(it->second, rec.src_offset + done, buffer.data(), step, rec.src_filename);
+                            write_all_fd(dst_fd, buffer, payload_filename);
+                            done += step;
+                        }
+                        payload_offset += rec.logical_nbytes;
+                        out_records.push_back(std::move(rec));
+                        continue;
+                    }
+                    rec.storage_format = "chunked_raw_dense";
+                    rec.payload_offset = 0;
+                    rec.stored_nbytes = 0;
+                    rec.tensor_flags = 0;
+                    rec.compression_codec = MEGA_COMPRESSION_NONE;
+                    rec.chunks = std::move(chunks);
+                    out_records.push_back(std::move(rec));
+                    continue;
+                }
                 std::vector<uint8_t> raw(static_cast<size_t>(rec.logical_nbytes));
                 read_exact_at(it->second, rec.src_offset, raw.data(), rec.logical_nbytes, rec.src_filename);
-                const bool try_compress = compression_codec != MEGA_COMPRESSION_NONE && rec.logical_nbytes > 0;
                 std::vector<uint8_t> encoded;
-                uint32_t selected_codec = compression_codec;
                 if (try_compress) {
-                    if (compression_codec == MEGA_COMPRESSION_AUTO) {
-                        encoded = compress_payload(MEGA_COMPRESSION_ZSTD, raw, compression_level);
-                        selected_codec = MEGA_COMPRESSION_ZSTD;
-                    } else {
-                        encoded = compress_payload(compression_codec, raw, compression_level);
-                    }
+                    encoded = compress_payload(selected_codec, raw, compression_level);
                 }
                 const bool use_compressed =
                     try_compress &&
@@ -2214,6 +2316,27 @@ static pybind11::list encode_file_tensors(
         item["shuffle_elem_size"] = rec.shuffle_elem_size;
         item["src_filename"] = payload_filename;
         item["src_offset"] = rec.payload_offset;
+        if (!rec.chunks.empty()) {
+            pybind11::list chunks;
+            for (const auto &chunk : rec.chunks) {
+                pybind11::dict entry;
+                entry["logical_offset"] = chunk.header.logical_offset;
+                entry["logical_size"] = chunk.header.logical_size;
+                entry["payload_offset"] = chunk.header.payload_offset;
+                entry["stored_size"] = chunk.header.stored_size;
+                entry["codec"] = chunk.header.codec;
+                entry["flags"] = chunk.header.flags;
+                entry["checksum_type"] = chunk.header.checksum_type;
+                entry["checksum"] = pybind11::bytes(
+                    std::string(
+                        reinterpret_cast<const char *>(chunk.header.checksum.data()),
+                        chunk.header.checksum.size()
+                    )
+                );
+                chunks.append(entry);
+            }
+            item["chunks"] = chunks;
+        }
         out.append(item);
     }
     return out;
@@ -2231,12 +2354,45 @@ static void write_file(
     std::vector<mega_file_tensor_source> normalized;
     normalized.reserve(static_cast<size_t>(pybind11::len(tensors)));
 
+    uint64_t total_chunks = 0;
+    for (pybind11::handle item : tensors) {
+        pybind11::dict tensor = pybind11::reinterpret_borrow<pybind11::dict>(item);
+        if (tensor.contains("chunks")) {
+            total_chunks += static_cast<uint64_t>(pybind11::len(tensor["chunks"]));
+        }
+    }
+    const pybind11::str chunk_format_key("mega.chunk_directory.format");
+    const pybind11::str chunk_count_key("mega.chunk_directory.count");
+    const bool has_chunks = total_chunks > 0;
+    uint64_t metadata_count = static_cast<uint64_t>(metadata.size());
+    if (has_chunks) {
+        if (!metadata.contains(chunk_format_key)) {
+            ++metadata_count;
+        }
+        if (!metadata.contains(chunk_count_key)) {
+            ++metadata_count;
+        }
+    }
+
     std::vector<uint8_t> header;
     append_le<uint32_t>(header, MEGA_MAGIC);
     append_le<uint32_t>(header, MEGA_FORMAT_VERSION);
     append_le<uint64_t>(header, static_cast<uint64_t>(pybind11::len(tensors)));
-    append_le<uint64_t>(header, static_cast<uint64_t>(metadata.size()));
-    append_metadata_entries(header, metadata);
+    append_le<uint64_t>(header, metadata_count);
+    for (auto item : metadata) {
+        if (has_chunks &&
+            (item.first.equal(chunk_format_key) || item.first.equal(chunk_count_key))) {
+            continue;
+        }
+        append_string(header, pybind11::cast<std::string>(item.first));
+        append_metadata_value(header, item.second);
+    }
+    if (has_chunks) {
+        append_string(header, "mega.chunk_directory.format");
+        append_metadata_value(header, pybind11::str("v1"));
+        append_string(header, "mega.chunk_directory.count");
+        append_metadata_value(header, pybind11::int_(total_chunks));
+    }
 
     for (pybind11::handle item : tensors) {
         pybind11::dict tensor = pybind11::reinterpret_borrow<pybind11::dict>(item);
@@ -2277,6 +2433,46 @@ static void write_file(
         validate_checksum_field(rec.checksum_type, rec.checksum, dst_filename, "tensor " + rec.name);
         rec.src_filename = tensor["src_filename"].cast<std::string>();
         rec.src_offset = tensor["src_offset"].cast<uint64_t>();
+
+        if (tensor.contains("chunks")) {
+            pybind11::list chunk_list = pybind11::reinterpret_borrow<pybind11::list>(tensor["chunks"]);
+            std::vector<mega_chunk_record> chunk_headers;
+            chunk_headers.reserve(static_cast<size_t>(pybind11::len(chunk_list)));
+            rec.chunks.reserve(static_cast<size_t>(pybind11::len(chunk_list)));
+            for (pybind11::handle chunk_item : chunk_list) {
+                pybind11::dict chunk = pybind11::reinterpret_borrow<pybind11::dict>(chunk_item);
+                mega_file_chunk_source source;
+                source.header.tensor_id = static_cast<uint32_t>(normalized.size());
+                source.header.chunk_id = static_cast<uint32_t>(chunk_headers.size());
+                source.header.logical_offset = chunk["logical_offset"].cast<uint64_t>();
+                source.header.logical_size = chunk["logical_size"].cast<uint64_t>();
+                source.header.payload_offset = chunk["payload_offset"].cast<uint64_t>();
+                source.header.stored_size = chunk["stored_size"].cast<uint64_t>();
+                source.header.codec = chunk["codec"].cast<uint32_t>();
+                source.header.flags = chunk["flags"].cast<uint32_t>();
+                source.header.checksum_type = chunk["checksum_type"].cast<uint32_t>();
+                source.header.checksum.fill(0);
+                if (chunk.contains("checksum")) {
+                    const std::string checksum = chunk["checksum"].cast<std::string>();
+                    if (checksum.size() != source.header.checksum.size()) {
+                        throw std::runtime_error("MEGA chunk checksum must be exactly 32 bytes");
+                    }
+                    std::memcpy(source.header.checksum.data(), checksum.data(), source.header.checksum.size());
+                }
+                if (source.header.stored_size == 0 || source.header.logical_size == 0) {
+                    throw std::runtime_error("MEGA chunk record for tensor " + rec.name + " has zero size");
+                }
+                validate_checksum_field(
+                    source.header.checksum_type, source.header.checksum, dst_filename, "chunk record"
+                );
+                source.src_offset = source.header.payload_offset;
+                chunk_headers.push_back(source.header);
+                rec.chunks.push_back(source);
+            }
+            validate_chunk_records(
+                chunk_headers, rec.logical_nbytes, rec.shuffle_elem_size, dst_filename, rec.name
+            );
+        }
 
         uint32_t dir_flags = 0;
         if (rec.storage_format != "raw_dense") {
@@ -2328,6 +2524,22 @@ static void write_file(
         normalized.push_back(std::move(rec));
     }
 
+    for (const auto &rec : normalized) {
+        for (const auto &chunk : rec.chunks) {
+            append_le<uint32_t>(header, chunk.header.tensor_id);
+            append_le<uint32_t>(header, chunk.header.chunk_id);
+            append_le<uint64_t>(header, chunk.header.logical_offset);
+            append_le<uint64_t>(header, chunk.header.logical_size);
+            append_le<uint64_t>(header, chunk.header.payload_offset);
+            append_le<uint64_t>(header, chunk.header.stored_size);
+            append_le<uint32_t>(header, chunk.header.codec);
+            append_le<uint32_t>(header, chunk.header.flags);
+            append_le<uint32_t>(header, chunk.header.checksum_type);
+            append_le<uint32_t>(header, 0);
+            append_bytes(header, chunk.header.checksum.data(), chunk.header.checksum.size());
+        }
+    }
+
     const uint64_t pad = (alignment - (header.size() % alignment)) % alignment;
     const uint64_t payload_base = static_cast<uint64_t>(header.size()) + pad;
     pybind11::gil_scoped_release release;
@@ -2364,6 +2576,25 @@ static void write_file(
                         throw std::runtime_error(rec.src_filename + ": failed to open tensor source file");
                     }
                     it = src_fds.emplace(rec.src_filename, src_fd).first;
+                }
+                if (!rec.chunks.empty()) {
+                    for (const auto &chunk : rec.chunks) {
+                        const uint64_t chunk_dst = payload_base + chunk.header.payload_offset;
+                        if (chunk_dst != dst_cursor) {
+                            if (lseek(dst_fd, static_cast<off_t>(chunk_dst), SEEK_SET) < 0) {
+                                throw std::runtime_error(dst_filename + ": failed to seek to payload offset " + std::to_string(chunk_dst));
+                            }
+                        }
+                        copy_fd_range(
+                            it->second,
+                            dst_fd,
+                            chunk.src_offset,
+                            chunk.header.stored_size,
+                            rec.src_filename
+                        );
+                        dst_cursor = chunk_dst + chunk.header.stored_size;
+                    }
+                    continue;
                 }
                 const uint64_t dst_offset = payload_base + rec.payload_offset;
                 if (dst_offset != dst_cursor) {
@@ -2628,7 +2859,8 @@ static void copy_raw_payload_fd(
     uint64_t nbytes,
     uint32_t checksum_type,
     const std::array<uint8_t, 32> &checksum,
-    uintptr_t dst_ptr
+    uintptr_t dst_ptr,
+    bool parallel_segments = true
 ) {
     if (nbytes == 0) {
         return;
@@ -2662,6 +2894,9 @@ static void copy_raw_payload_fd(
     auto choose_segments = [&]() -> uint64_t {
         constexpr uint64_t MIN_SEGMENT_BYTES = 2ULL * 1024ULL * 1024ULL;
         constexpr uint64_t MAX_SEGMENTS = 8;
+        if (!parallel_segments) {
+            return 1;
+        }
         unsigned workers = std::thread::hardware_concurrency();
         if (workers == 0) {
             workers = 1;
@@ -2867,8 +3102,12 @@ static void decode_payload_fd(
         logical_nbytes <= static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
         std::vector<uint8_t> payload(static_cast<size_t>(stored_nbytes));
         read_exact_at(fd, file_offset, payload.data(), stored_nbytes, filename);
-        verify_stored_payload_checksum(
-            payload, checksum_type, checksum, filename, tensor_name, "payload"
+        verify_raw_payload_ptr(
+            reinterpret_cast<uintptr_t>(payload.data()),
+            stored_nbytes,
+            checksum_type,
+            checksum,
+            ""
         );
         decompress_zstd_to(
             payload,
@@ -2892,6 +3131,170 @@ static void decode_payload_fd(
         "payload"
     );
     copy_decoded_payload_to_dst(dst_ptr, dst_is_cuda, payload);
+}
+
+// One decode task writes a contiguous logical byte range of a tensor.  A
+// non-chunked tensor is a single task, while a chunked tensor contributes one
+// task per chunk so that unrelated chunks from any tensor can share the worker
+// pool.
+struct mega_decode_task {
+    std::string tensor_name;
+    uint64_t file_offset;
+    uint64_t stored_nbytes;
+    uint64_t logical_nbytes;
+    uint32_t tensor_flags;
+    uint32_t compression_codec;
+    uint32_t shuffle_elem_size;
+    uint32_t checksum_type;
+    std::array<uint8_t, 32> checksum;
+    uintptr_t dst_ptr;
+    uint64_t dst_offset;
+    bool raw_dense = false;
+};
+
+static void decode_task(
+    int fd,
+    const std::string &filename,
+    const mega_decode_task &task
+) {
+    if (task.logical_nbytes == 0) {
+        return;
+    }
+    if (task.dst_ptr == 0) {
+        throw std::runtime_error(filename + ": tensor " + task.tensor_name + " destination pointer is null");
+    }
+    if (task.logical_nbytes > static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
+        task.stored_nbytes > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+        throw std::runtime_error(filename + ": tensor " + task.tensor_name + " payload is too large for this platform");
+    }
+    uint8_t *dst = reinterpret_cast<uint8_t *>(task.dst_ptr + static_cast<uintptr_t>(task.dst_offset));
+    if (task.raw_dense) {
+        copy_raw_payload_fd(
+            fd,
+            filename,
+            task.tensor_name,
+            task.file_offset,
+            task.stored_nbytes,
+            task.checksum_type,
+            task.checksum,
+            task.dst_ptr,
+            task.stored_nbytes >= 64ULL * 1024ULL * 1024ULL
+        );
+        return;
+    }
+    if (task.compression_codec == MEGA_COMPRESSION_ZSTD &&
+        task.tensor_flags == MEGA_TENSOR_FLAG_COMPRESSED) {
+        std::vector<uint8_t> payload(static_cast<size_t>(task.stored_nbytes));
+        read_exact_at(fd, task.file_offset, payload.data(), task.stored_nbytes, filename);
+        verify_raw_payload_ptr(
+            reinterpret_cast<uintptr_t>(payload.data()),
+            task.stored_nbytes,
+            task.checksum_type,
+            task.checksum,
+            ""
+        );
+        decompress_zstd_to(payload, dst, task.logical_nbytes);
+        return;
+    }
+    std::vector<uint8_t> payload = read_decode_payload(
+        fd,
+        filename,
+        task.tensor_name,
+        task.file_offset,
+        task.stored_nbytes,
+        task.logical_nbytes,
+        task.tensor_flags,
+        task.compression_codec,
+        task.shuffle_elem_size,
+        task.checksum_type,
+        task.checksum,
+        "payload"
+    );
+    std::memcpy(dst, payload.data(), payload.size());
+}
+
+// Run independent jobs on a bounded worker pool.  Every job index runs
+// exactly once; the first failure is rethrown after all workers join.
+template <typename Job>
+static void run_parallel_tasks(size_t count, unsigned max_workers, Job &&job) {
+    if (count == 0) {
+        return;
+    }
+    unsigned workers = std::thread::hardware_concurrency();
+    if (workers == 0) {
+        workers = 1;
+    }
+    if (workers > max_workers) {
+        workers = max_workers;
+    }
+    if (workers > count) {
+        workers = static_cast<unsigned>(count);
+    }
+    std::atomic<size_t> cursor(0);
+    std::vector<std::exception_ptr> errors(count);
+    auto run = [&] {
+        for (;;) {
+            const size_t index = cursor.fetch_add(1, std::memory_order_relaxed);
+            if (index >= count) {
+                return;
+            }
+            try {
+                job(index);
+            } catch (...) {
+                errors[index] = std::current_exception();
+            }
+        }
+    };
+    std::vector<std::thread> threads;
+    threads.reserve(workers - 1);
+    for (unsigned worker = 1; worker < workers; ++worker) {
+        try {
+            threads.emplace_back(run);
+        } catch (const std::system_error &) {
+            break;
+        }
+    }
+    run();
+    for (std::thread &thread : threads) {
+        thread.join();
+    }
+    for (const std::exception_ptr &error : errors) {
+        if (error) {
+            std::rethrow_exception(error);
+        }
+    }
+}
+
+// Decode independent payload ranges concurrently.  Each task reads, verifies
+// and decompresses one payload; sorted order is irrelevant because every task
+// owns a disjoint logical range of its destination tensor.
+static void decode_payloads_fd(
+    int fd,
+    const std::string &filename,
+    const std::vector<mega_decode_task> &tasks
+) {
+    run_parallel_tasks(tasks.size(), 12, [&](size_t index) {
+        decode_task(fd, filename, tasks[index]);
+    });
+}
+
+// Verify mapped payload ranges concurrently.  Mapped tensors need no decode,
+// so verification is the only per-tensor work worth spreading across workers.
+struct mega_verify_task {
+    uintptr_t addr;
+    uint64_t nbytes;
+    uint32_t checksum_type;
+    std::array<uint8_t, 32> checksum;
+    std::string expected_hex;
+};
+
+static void verify_payload_tasks(const std::vector<mega_verify_task> &tasks) {
+    run_parallel_tasks(tasks.size(), 12, [&](size_t index) {
+        const mega_verify_task &task = tasks[index];
+        verify_raw_payload_ptr(
+            task.addr, task.nbytes, task.checksum_type, task.checksum, task.expected_hex
+        );
+    });
 }
 
 static void validate_chunk_records(
@@ -4024,6 +4427,79 @@ PYBIND11_MODULE(__MOD_NAME__, m)
         }
     );
     m.def(
+        "decode_payloads_fd",
+        [](int fd,
+           const std::string &filename,
+           pybind11::list py_jobs) {
+            std::vector<mega_decode_task> tasks;
+            for (pybind11::handle item : py_jobs) {
+                pybind11::dict job = pybind11::reinterpret_borrow<pybind11::dict>(item);
+                const std::string tensor_name = job["tensor_name"].cast<std::string>();
+                const uintptr_t dst_ptr = job["dst_ptr"].cast<uintptr_t>();
+                const uint32_t shuffle_elem_size = job.contains("shuffle_elem_size")
+                    ? job["shuffle_elem_size"].cast<uint32_t>()
+                    : 0;
+                const bool raw_dense = job.contains("raw") && job["raw"].cast<bool>();
+                auto append_task = [&](uint64_t file_offset,
+                                       uint64_t stored_nbytes,
+                                       uint64_t logical_nbytes,
+                                       uint32_t tensor_flags,
+                                       uint32_t compression_codec,
+                                       uint32_t checksum_type,
+                                       pybind11::handle py_checksum,
+                                       uint64_t dst_offset) {
+                    const std::string checksum_bytes = py_checksum.cast<std::string>();
+                    if (checksum_bytes.size() != 32) {
+                        throw std::runtime_error("MEGA tensor checksum field must be 32 bytes");
+                    }
+                    mega_decode_task task;
+                    task.tensor_name = tensor_name;
+                    task.file_offset = file_offset;
+                    task.stored_nbytes = stored_nbytes;
+                    task.logical_nbytes = logical_nbytes;
+                    task.tensor_flags = tensor_flags;
+                    task.compression_codec = compression_codec;
+                    task.shuffle_elem_size = shuffle_elem_size;
+                    task.checksum_type = checksum_type;
+                    task.checksum.fill(0);
+                    std::memcpy(task.checksum.data(), checksum_bytes.data(), task.checksum.size());
+                    task.dst_ptr = dst_ptr;
+                    task.dst_offset = dst_offset;
+                    task.raw_dense = raw_dense && dst_offset == 0;
+                    tasks.push_back(std::move(task));
+                };
+                if (job.contains("chunks")) {
+                    for (pybind11::handle chunk_item : job["chunks"]) {
+                        pybind11::dict chunk = pybind11::reinterpret_borrow<pybind11::dict>(chunk_item);
+                        append_task(
+                            chunk["file_offset"].cast<uint64_t>(),
+                            chunk["stored_nbytes"].cast<uint64_t>(),
+                            chunk["logical_nbytes"].cast<uint64_t>(),
+                            chunk["tensor_flags"].cast<uint32_t>(),
+                            chunk["compression_codec"].cast<uint32_t>(),
+                            chunk["checksum_type"].cast<uint32_t>(),
+                            chunk["checksum"],
+                            chunk["dst_offset"].cast<uint64_t>()
+                        );
+                    }
+                } else {
+                    append_task(
+                        job["file_offset"].cast<uint64_t>(),
+                        job["stored_nbytes"].cast<uint64_t>(),
+                        job["logical_nbytes"].cast<uint64_t>(),
+                        job["tensor_flags"].cast<uint32_t>(),
+                        job["compression_codec"].cast<uint32_t>(),
+                        job["checksum_type"].cast<uint32_t>(),
+                        job["checksum"],
+                        0
+                    );
+                }
+            }
+            pybind11::gil_scoped_release release;
+            decode_payloads_fd(fd, filename, tasks);
+        }
+    );
+    m.def(
         "copy_raw_payload_fd",
         [](int fd,
            const std::string &filename,
@@ -4078,6 +4554,40 @@ PYBIND11_MODULE(__MOD_NAME__, m)
                 pybind11::gil_scoped_release release;
                 verify_raw_payload_ptr(addr, nbytes, checksum_type, checksum, expected_hex);
             }
+        }
+    );
+    m.def(
+        "verify_buffer_payloads",
+        [](pybind11::buffer source, pybind11::list py_jobs) {
+            pybind11::buffer_info info = source.request();
+            const uint64_t total = static_cast<uint64_t>(info.size) *
+                                   static_cast<uint64_t>(info.itemsize);
+            std::vector<mega_verify_task> tasks;
+            tasks.reserve(static_cast<size_t>(pybind11::len(py_jobs)));
+            for (pybind11::handle item : py_jobs) {
+                pybind11::dict job = pybind11::reinterpret_borrow<pybind11::dict>(item);
+                const uint64_t offset = job["offset"].cast<uint64_t>();
+                const uint64_t nbytes = job["nbytes"].cast<uint64_t>();
+                if (offset > total || nbytes > total - offset) {
+                    throw std::runtime_error("MEGA checksum buffer range is out of bounds");
+                }
+                const std::string checksum_bytes = job["checksum"].cast<std::string>();
+                if (checksum_bytes.size() != 32) {
+                    throw std::runtime_error("MEGA tensor checksum field must be 32 bytes");
+                }
+                mega_verify_task task;
+                task.addr = reinterpret_cast<uintptr_t>(info.ptr) + offset;
+                task.nbytes = nbytes;
+                task.checksum_type = job["checksum_type"].cast<uint32_t>();
+                task.checksum.fill(0);
+                std::memcpy(task.checksum.data(), checksum_bytes.data(), task.checksum.size());
+                task.expected_hex = job.contains("expected_hex")
+                    ? job["expected_hex"].cast<std::string>()
+                    : std::string();
+                tasks.push_back(std::move(task));
+            }
+            pybind11::gil_scoped_release release;
+            verify_payload_tasks(tasks);
         }
     );
     m.def(

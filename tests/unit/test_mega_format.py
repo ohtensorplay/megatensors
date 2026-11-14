@@ -2050,3 +2050,61 @@ def test_mega_moe_expert_table_rejects_unknown_segment(tmp_path, framework):
 
     with pytest.raises(Exception, match="unknown segment_id"):
         MegaTensorsMetadata.from_file(path, framework)
+
+
+def test_encode_file_tensors_splits_large_compressed_tensors_into_chunks(tmp_path, framework):
+    if framework.get_name() != "pytorch":
+        pytest.skip("test uses torch tensor assertions")
+    import torch
+
+    src = tmp_path / "source.bin"
+    payload = tmp_path / "payload.tmp"
+    dst = tmp_path / "chunked-zstd.mega"
+    value = torch.zeros(3 * 1024 * 1024, dtype=torch.float32)
+    value[::4096] = 1.0
+    src.write_bytes(value.numpy().tobytes())
+
+    records = list(
+        megacpp.encode_file_tensors(
+            str(payload),
+            [
+                {
+                    "name": "w",
+                    "shape": [int(value.numel())],
+                    "logical_dtype": "F32",
+                    "storage_format": "raw_dense",
+                    "payload_offset": 0,
+                    "logical_nbytes": value.nbytes,
+                    "stored_nbytes": value.nbytes,
+                    "src_filename": str(src),
+                    "src_offset": 0,
+                }
+            ],
+            COMPRESSION_ZSTD,
+            3,
+            1.0,
+        )
+    )
+    assert records[0]["storage_format"] == "chunked_raw_dense"
+    assert len(records[0]["chunks"]) >= 3
+    assert int(records[0]["stored_nbytes"]) == 0
+
+    megacpp.write_file(
+        str(dst),
+        records,
+        {
+            "general.architecture": "test",
+            "general.alignment": 4096,
+            "mega.layout.tensor_order": "original",
+            "mega.tensor_info.format": "self_describing",
+        },
+        4096,
+    )
+
+    meta = MegaTensorsMetadata.from_file(str(dst), framework)
+    frame = meta.tensors["w"]
+    assert frame.storage_format == "chunked_raw_dense"
+    assert len(frame.chunks) >= 3
+    with mega_open(str(dst), framework="pt", device="cpu", nogds=True) as handle:
+        actual = handle.get_tensor("w").clone()
+    assert torch.equal(actual, value)

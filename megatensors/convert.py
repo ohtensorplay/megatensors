@@ -117,7 +117,10 @@ def convert_model(
             **base_meta,
             "mega.shard.index": shard_index - 1,
             "mega.shard.count": total_shards,
-            "mega.shard.payload.nbytes": sum(int(t["stored_nbytes"]) for t in shard_payload),
+            "mega.shard.payload.nbytes": sum(
+                int(t["stored_nbytes"]) + sum(int(c["stored_size"]) for c in t.get("chunks", []))
+                for t in shard_payload
+            ),
         }
         megacpp.write_file(str(shard_path), shard_payload, shard_meta, int(alignment))
         if compression_codec != MEGA_COMPRESSION_NONE and encoded_payload.exists():
